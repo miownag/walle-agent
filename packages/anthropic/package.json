@@ -1,0 +1,36 @@
+{
+  "name": "@walle-agent/anthropic",
+  "version": "0.1.0",
+  "description": "Walle Agent SDK — Anthropic LLM Provider",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0"
+  },
+  "peerDependencies": {
+    "@walle-agent/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@walle-agent/core": "workspace:*",
+    "typescript": "^5.7.0",
+    "tsup": "^8.3.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}

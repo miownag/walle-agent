@@ -1,0 +1,35 @@
+{
+  "name": "walle-agent-examples",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "basic": "tsx basic-agent.ts",
+    "stream": "tsx streaming.ts",
+    "thinking": "tsx thinking.ts",
+    "memory": "tsx memory.ts",
+    "evolution": "tsx evolution.ts",
+    "mcp": "tsx mcp.ts",
+    "rag": "tsx rag.ts",
+    "trace": "tsx trace.ts",
+    "complete": "tsx walle-complete.ts"
+  },
+  "dependencies": {
+    "@walle-agent/core": "workspace:*",
+    "@walle-agent/openai": "workspace:*",
+    "@walle-agent/anthropic": "workspace:*",
+    "@walle-agent/memory": "workspace:*",
+    "@walle-agent/skills": "workspace:*",
+    "@walle-agent/evolution": "workspace:*",
+    "@walle-agent/mcp": "workspace:*",
+    "@walle-agent/rag": "workspace:*",
+    "@walle-agent/trace": "workspace:*",
+    "@walle-agent/sandbox": "workspace:*",
+    "@walle-agent/team": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
+

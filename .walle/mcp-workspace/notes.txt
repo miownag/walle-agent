@@ -1,0 +1,2 @@
+Ship Phase 3 MCP slice.
+Follow-ups: sandbox + permissions.
