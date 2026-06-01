@@ -31,6 +31,7 @@ import {
 } from "./builtin-tools/tool-search.js";
 import { createDeferExecuteTool } from "./builtin-tools/defer-execute-tool.js";
 import { READ_TOOL_RESULT_NAME } from "./builtin-tools/read-tool-result.js";
+import { createWebFetchTool, WEB_FETCH_NAME } from "./builtin-tools/web-fetch-tool.js";
 import { SubAgentRegistry } from "./sub-agent-registry.js";
 import { mergeAbortSignals } from "./signal-utils.js";
 import { partitionByTurns } from "./message-compactor.js";
@@ -118,6 +119,10 @@ export class AgentRuntime {
     //    fully populated (config.subAgents + any plugin contributions).
     this.registerTaskTool();
 
+    // 6b. Register the per-agent `web_fetch` tool — needs an LLMProvider
+    //     handle for its summarisation step, so it cannot live in BUILTIN_TOOLS.
+    this.registerWebFetchTool();
+
     // 7. Apply tool-search policy: shadow MCP tools and register
     //    tool_search / defer_execute_tool when applicable.
     this.applyToolSearchPolicy();
@@ -181,6 +186,38 @@ export class AgentRuntime {
       defaultMaxTurns: this.config.maxTurns,
     });
     this.toolRegistry.register(taskTool);
+  }
+
+  /**
+   * Register the per-agent `web_fetch` tool. Needs a handle to an
+   * `LLMProvider` for its summarisation step so it cannot live as a
+   * module-level singleton in `BUILTIN_TOOLS`. Registered conditionally on
+   * the global fetch API being available so non-Node-20 hosts gracefully
+   * skip the tool instead of crashing at startup.
+   *
+   * Honors `useBuiltinTools` exclude/include rules and lets a user-supplied
+   * tool with the same name override the built-in.
+   */
+  private registerWebFetchTool(): void {
+    const config = this.config.useBuiltinTools;
+    if (config === false) return;
+    if (typeof config === "object") {
+      if (config.includeTools && config.includeTools.length > 0) {
+        if (!config.includeTools.includes(WEB_FETCH_NAME)) return;
+      } else if (config.excludeTools && config.excludeTools.includes(WEB_FETCH_NAME)) {
+        return;
+      }
+    }
+    if (this.toolRegistry.has(WEB_FETCH_NAME)) return;
+    if (typeof globalThis.fetch !== "function") return;
+
+    try {
+      const tool = createWebFetchTool({ model: this.config.model });
+      this.toolRegistry.register(tool);
+    } catch {
+      // Defensive: createWebFetchTool only throws when fetch is missing,
+      // which we already guarded against. Swallow to keep init resilient.
+    }
   }
 
   /**

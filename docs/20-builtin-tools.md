@@ -24,6 +24,7 @@ Built-in工具直接内置在 `@walle-agent/core` 中，创建 Agent 时**默认
 | write_todos | task | low | No | 任务列表管理 |
 | read_tool_result | context | low | No | 按 toolCallId 读取被 micro 压缩逐出的 tool 结果（见 [21](./21-context-compression.md)） |
 | task | sub-agent | low | No | 动态派发任务给已注册的 sub-agent 类型（见 [14-team-swarm.md](./14-team-swarm.md#dynamic-subagenttask-工具)） |
+| web_fetch | web | medium | No | 拉取 URL → HTML→Markdown → 用 LLM 按 prompt 摘要（对齐 Claude Code WebFetch） |
 | tool_search | tool-search | low | No | 搜索（含被 shadow 的）工具，配合 `defer_execute_tool` 使用（见 [22](./22-tool-search.md)） |
 | defer_execute_tool | tool-search | low | No | 按 qualifiedName 调用任意已注册工具，权限走 underlying tool 的 policy |
 
@@ -195,29 +196,90 @@ output: { error: string; available: string[] }   // 不抛异常,让 LLM 自行�
 **默认行为**:与其他 built-in 一样默认启用;`useBuiltinTools: { excludeTools: ["task"] }`
 可关闭。Sub-agent 自己的 `useBuiltinTools` 默认 `false`(防递归)。
 
+### web_fetch
+
+抓取一个 URL 的内容,把 HTML 转成 Markdown,再用一个小快模型按 `prompt`
+做摘要后返回。对齐 Claude Code 的 `WebFetch`,详见
+[plans/builtin-web-fetch/](../plans/builtin-web-fetch/)。
+
+```ts
+input: {
+  url: string;        // http:// 自动升级到 https://
+  prompt: string;     // 给摘要 LLM 的 user prompt
+  timeout?: number;   // ms, default 30000
+}
+
+// 成功
+output: {
+  url: string;            // 原始入参
+  finalUrl: string;       // 升级 / 同主机重定向后的 URL
+  status: number;
+  contentType?: string;
+  content: string;        // LLM 给出的 prompt 答案
+  truncated: boolean;     // 内容是否被截断
+  cached?: boolean;       // 命中 15 分钟缓存时为 true
+}
+
+// 跨主机重定向(不自动跟随,交回 LLM 决定)
+output: {
+  url: string;
+  redirectTo: string;
+  redirectHost: string;
+  status: number;
+  message: string;
+}
+
+// 错误
+output: { error: string; url?: string; status?: number }
+```
+
+**与 `task` 类似**:`web_fetch` 也不是 module 级单例——它需要 `LLMProvider`
+句柄做摘要,所以 `AgentRuntime.registerWebFetchTool()` 在 `init()` 中按
+当前 Agent 的 `config.model` 单独构造一份。
+
+**关键行为**:
+- 自动 `http://` → `https://`,`finalUrl` 反映升级后的 URL
+- 跨主机重定向不自动跟随,返回结构化 `{ redirectTo, redirectHost, message }`
+- 同主机重定向默认最多跟 5 跳
+- HTML 转 Markdown 走零依赖纯 TS 实现(去掉 `<script>/<style>` 等噪声,
+  decode entities,折叠空白)
+- `application/json` 自动 pretty-print 后用 ``` 包起来
+- 内容超过 `maxContentChars`(默认 100_000)前截断后再喂模型
+- 15 分钟内同 `(model.name, finalUrl, prompt)` 命中缓存
+- `globalThis.fetch` 不可用(Node < 20 / 沙箱)时静默跳过注册,不会让 init 崩
+
+**默认行为**:与其他 built-in 一样默认启用;`useBuiltinTools: { excludeTools: ["web_fetch"] }`
+可关闭。`riskLevel: "medium"`(出站网络访问任意 URL),不强制审批,
+依赖宿主的 `permissions` 策略。
+
 ## 实现架构
 
 ```
 packages/core/src/
 ├── builtin-tools/
-│   ├── index.ts            # 汇总导出 + BUILTIN_TOOLS 数组（不含 task,见下）
+│   ├── index.ts            # 汇总导出 + BUILTIN_TOOLS 数组（不含 task / web_fetch / tool_search / defer_execute_tool,见下）
 │   ├── filesystem-tools.ts # ls, read_file, write_file, edit_file, glob, grep
 │   ├── shell-tool.ts       # bash
 │   ├── plan-tool.ts        # plan
 │   ├── todo-tool.ts        # write_todos
-│   └── task-tool.ts        # task — createTaskTool({registry, defaultModel?}) factory
+│   ├── task-tool.ts        # task — createTaskTool({registry, defaultModel?}) factory
+│   ├── web-fetch-tool.ts   # web_fetch — createWebFetchTool({model, …}) factory + htmlToMarkdown
+│   ├── tool-search.ts      # tool_search — createToolSearchTool({registry}) factory
+│   └── defer-execute-tool.ts # defer_execute_tool — createDeferExecuteTool({registry, checkPermission}) factory
 ├── sub-agent-registry.ts   # SubAgentRegistry + SubAgentDefinition
 ├── agent-config.ts         # BuiltinToolsConfig + useBuiltinTools + subAgents
-├── agent-runtime.ts        # init() 中自动注册 + registerBuiltinTools() + 构建 task tool
-└── index.ts                # 公开导出所有内置工具 + SubAgentRegistry/createTaskTool
+├── agent-runtime.ts        # init() 中自动注册 + registerBuiltinTools / registerTaskTool / registerWebFetchTool / applyToolSearchPolicy
+└── index.ts                # 公开导出所有内置工具 + SubAgentRegistry/createTaskTool/createWebFetchTool
 ```
 
 关键设计：
 - 内置工具在 `AgentRuntime.init()` 中**先于**用户工具注册
 - 用户通过 `tools: [...]` 传入的工具可以覆盖同名内置工具
 - 不耦合：core 不依赖外部包，`glob` 是唯一额外依赖
-- `task` 工具是**唯一**不在 `BUILTIN_TOOLS` 数组里的内置工具——它需要每 Agent
-  实例化(注入当前 Agent 的 `SubAgentRegistry`),由 `registerBuiltinTools()` 单独构造。
+- 不在 `BUILTIN_TOOLS` 数组里的工具有 `task` / `web_fetch` / `tool_search` /
+  `defer_execute_tool`——它们都需要每 Agent 单独构造(分别注入 `SubAgentRegistry`、
+  `LLMProvider`、`ToolRegistry`),由 `registerTaskTool` / `registerWebFetchTool` /
+  `applyToolSearchPolicy` 单独构造。
 
 ## 测试
 

@@ -42,8 +42,6 @@
 | 20 | [Built-in Tools](./20-builtin-tools.md) | 内置工具（core 自动注册）：文件系统、Shell、Plan、Task Management |
 | 21 | [Context Compression](./21-context-compression.md) | Micro（按 turn 逐出 tool result）+ Macro（对话摘要）双层压缩 |
 | 22 | [Tool Search](./22-tool-search.md) | ToolRegistry shadow + `tool_search` / `defer_execute_tool` 内置工具 |
-| 21 | [Context Compression](./21-context-compression.md) | Micro（按 turn 逐出 tool result）+ Macro（对话摘要）双层压缩 |
-| 22 | [Tool Search](./22-tool-search.md) | ToolRegistry shadow + `tool_search` / `defer_execute_tool` 内置工具 |
 
 ---
 
@@ -68,7 +66,7 @@ const agent = await Agent.create({
       taskReview: { enabled: true, minToolCalls: 5 },
     }),
   ],
-  // 内置工具 (ls, read_file, write_file, edit_file, glob, grep, bash, plan, write_todos, task)
+  // 内置工具 (ls, read_file, write_file, edit_file, glob, grep, bash, plan, write_todos, task, web_fetch)
   // 默认全部启用，无需配置
 });
 

@@ -151,6 +151,10 @@ export {
   scoreTool,
   deriveServerName,
   createDeferExecuteTool,
+  createWebFetchTool,
+  WEB_FETCH_NAME,
+  htmlToMarkdown,
+  clearWebFetchCache,
 } from "./builtin-tools/index.js";
 export type { Plan, PlanStep, PlanToolInput } from "./builtin-tools/index.js";
 export type {
@@ -172,6 +176,12 @@ export type {
   DeferExecuteErrorOutput,
   CreateDeferExecuteOptions,
   CheckPermissionFn,
+  WebFetchInput,
+  WebFetchOutput,
+  WebFetchSuccessOutput,
+  WebFetchRedirectOutput,
+  WebFetchErrorOutput,
+  CreateWebFetchOptions,
 } from "./builtin-tools/index.js";
 
 // Sub-agent registry

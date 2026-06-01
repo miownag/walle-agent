@@ -12,6 +12,8 @@
  * - Tool search: tool_search, defer_execute_tool (NOT in BUILTIN_TOOLS —
  *   built per-agent by AgentRuntime.applyToolSearchPolicy when shadowing
  *   actually kicks in).
+ * - Web fetch: web_fetch (NOT in BUILTIN_TOOLS — needs an LLMProvider handle,
+ *   built per-agent by AgentRuntime.registerWebFetchTool).
  */
 
 export { lsTool, readFileTool, writeFileTool, editFileTool, globTool, grepTool } from "./filesystem-tools.js";
@@ -57,6 +59,20 @@ export type {
   CreateDeferExecuteOptions,
   CheckPermissionFn,
 } from "./defer-execute-tool.js";
+export {
+  createWebFetchTool,
+  WEB_FETCH_NAME,
+  htmlToMarkdown,
+  clearWebFetchCache,
+} from "./web-fetch-tool.js";
+export type {
+  WebFetchInput,
+  WebFetchOutput,
+  WebFetchSuccessOutput,
+  WebFetchRedirectOutput,
+  WebFetchErrorOutput,
+  CreateWebFetchOptions,
+} from "./web-fetch-tool.js";
 
 import { lsTool, readFileTool, writeFileTool, editFileTool, globTool, grepTool } from "./filesystem-tools.js";
 import { bashTool } from "./shell-tool.js";
