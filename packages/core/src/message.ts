@@ -61,6 +61,14 @@ export interface ModelMessage {
   content?: string | ContentBlock[];
   toolCallId?: string;
   toolCalls?: ModelToolCall[];
+  /**
+   * Optional message-level metadata. Walle-internal usage:
+   *  - `toolName` / `status` are attached by `AgentRuntime` to `role: "tool"`
+   *    messages so plugins can recover the original tool name when rewriting
+   *    payloads (e.g. `MemoryPlugin` building eviction envelopes).
+   * Custom keys are allowed; consumers should be liberal in what they accept.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 // ─── Tool Call / Definition ────────────────────────────────────────

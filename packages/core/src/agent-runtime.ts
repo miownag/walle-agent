@@ -13,6 +13,7 @@ import type { PermissionDecision } from "./permissions.js";
 import { checkToolPermission } from "./permissions.js";
 import type { ModelMessage, ModelToolCall } from "./message.js";
 import type { Tool, ToolCallRecord } from "./tool.js";
+import type { LLMProvider } from "./llm-provider.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { HookManager } from "./hooks.js";
 import { MiddlewarePipeline } from "./middleware.js";
@@ -23,8 +24,18 @@ import { AgentContextImpl } from "./agent-context.js";
 import { AgentStream, type AgentStreamEvent } from "./stream.js";
 import { BUILTIN_TOOLS } from "./builtin-tools/index.js";
 import { createTaskTool, TASK_TOOL_NAME } from "./builtin-tools/task-tool.js";
+import {
+  createToolSearchTool,
+  TOOL_SEARCH_NAME,
+  DEFER_EXECUTE_NAME,
+} from "./builtin-tools/tool-search.js";
+import { createDeferExecuteTool } from "./builtin-tools/defer-execute-tool.js";
+import { READ_TOOL_RESULT_NAME } from "./builtin-tools/read-tool-result.js";
 import { SubAgentRegistry } from "./sub-agent-registry.js";
 import { mergeAbortSignals } from "./signal-utils.js";
+import { partitionByTurns } from "./message-compactor.js";
+import { summariseConversation, SUMMARY_MESSAGE_PREFIX } from "./conversation-summarizer.js";
+import { estimateTokens } from "./token-estimate.js";
 
 interface ActiveRun {
   id: string;
@@ -107,6 +118,10 @@ export class AgentRuntime {
     //    fully populated (config.subAgents + any plugin contributions).
     this.registerTaskTool();
 
+    // 7. Apply tool-search policy: shadow MCP tools and register
+    //    tool_search / defer_execute_tool when applicable.
+    this.applyToolSearchPolicy();
+
     await this.hookManager.emit("onInit", this.pluginContext);
   }
 
@@ -166,6 +181,256 @@ export class AgentRuntime {
       defaultMaxTurns: this.config.maxTurns,
     });
     this.toolRegistry.register(taskTool);
+  }
+
+  /**
+   * Decide which tools to shadow and register the helper tools
+   * (`tool_search`, `defer_execute_tool`) when shadowing actually kicks in.
+   * Called at the end of `init()` so the decision sees the final tool set
+   * (built-ins + native + plugin-registered + task tool).
+   */
+  private applyToolSearchPolicy(): void {
+    const ts = this.config.toolSearch;
+    if (!ts.enabled || ts.mode === "off") return;
+    if (this.config.useBuiltinTools === false) return;
+
+    const all = this.toolRegistry.list();
+    const shadowable = all.filter((t) => isShadowable(t, ts.alwaysActiveTags, ts.alwaysShadowTags));
+
+    if (ts.mode === "auto" && all.length <= ts.threshold) return;
+    if (shadowable.length === 0) return;
+
+    for (const t of shadowable) this.toolRegistry.shadow(t.name);
+
+    const wantSearch = this.builtinAllowed(TOOL_SEARCH_NAME);
+    const wantDefer = this.builtinAllowed(DEFER_EXECUTE_NAME);
+
+    if (!wantSearch && !wantDefer) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[walle] toolSearch.enabled but useBuiltinTools excluded both helpers; " +
+          "shadowed tools will be unreachable.",
+      );
+      return;
+    }
+
+    if (wantSearch && !this.toolRegistry.has(TOOL_SEARCH_NAME)) {
+      this.toolRegistry.register(createToolSearchTool({ registry: this.toolRegistry }));
+    }
+    if (wantDefer && !this.toolRegistry.has(DEFER_EXECUTE_NAME)) {
+      this.toolRegistry.register(
+        createDeferExecuteTool({
+          registry: this.toolRegistry,
+          checkPermission: (tool, call) => this.checkPermission(tool, call),
+        }),
+      );
+    }
+  }
+
+  /**
+   * Whether a built-in named tool is allowed to be auto-registered, honouring
+   * `useBuiltinTools.{includeTools, excludeTools}`. Returns `false` when
+   * `useBuiltinTools === false`.
+   */
+  private builtinAllowed(name: string): boolean {
+    const cfg = this.config.useBuiltinTools;
+    if (cfg === false) return false;
+    if (typeof cfg === "object") {
+      if (cfg.includeTools && cfg.includeTools.length > 0) {
+        return cfg.includeTools.includes(name);
+      }
+      if (cfg.excludeTools && cfg.excludeTools.includes(name)) return false;
+    }
+    return true;
+  }
+
+  /** Read by `compact_messages` emit; falls back to macroCompression config or 3. */
+  private resolvedKeepRecentTurns(): number {
+    return this.config.macroCompression?.keepRecentTurns ?? 3;
+  }
+
+  /**
+   * Auto macro compression check, run between turns. Skipped when
+   * `macroCompression` is disabled or `manualOnly`.
+   */
+  private async maybeMacroCompact(
+    messages: ModelMessage[],
+    runId: string,
+    sessionId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const mc = this.config.macroCompression;
+    if (!mc || !mc.enabled || mc.manualOnly) return;
+
+    const max = this.tokenBudget.maxContextTokens;
+    const est = estimateTokens(messages);
+    if (est <= max * mc.threshold) return;
+
+    try {
+      await this.runMacroCompact(messages, runId, sessionId, mc.summaryModel, signal);
+    } catch (err) {
+      // Never crash the run on a summarisation failure.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[walle] macro compaction failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Run macro compression in place. Replaces the head region with a single
+   * synthesised user message carrying the LLM-produced summary, leaving the
+   * protected tail (most recent N turns) untouched.
+   */
+  private async runMacroCompact(
+    messages: ModelMessage[],
+    runId: string,
+    sessionId: string | undefined,
+    summaryModel: LLMProvider | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const mc = this.config.macroCompression;
+    const keep = mc?.keepRecentTurns ?? 3;
+    const partition = partitionByTurns(messages, keep);
+
+    if (partition.evictableIndices.size === 0) return;
+
+    const before = messages.length;
+    const head: ModelMessage[] = [];
+    const systems: ModelMessage[] = [];
+    const tail: ModelMessage[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].role === "system") {
+        systems.push(messages[i]);
+      } else if (partition.evictableIndices.has(i)) {
+        head.push(messages[i]);
+      } else {
+        tail.push(messages[i]);
+      }
+    }
+
+    if (head.length === 0) return;
+
+    const summary = await summariseConversation({
+      model: summaryModel ?? mc?.summaryModel ?? this.config.model,
+      messages: head,
+      promptTemplate: mc?.summaryPrompt,
+      signal,
+    });
+
+    const summaryMsg: ModelMessage = {
+      role: "user",
+      content: `${SUMMARY_MESSAGE_PREFIX}${head.length} earlier messages]\n${summary}`,
+      metadata: { summary: true, replacedCount: head.length },
+    };
+
+    // Mutate `messages` in place: keep system msgs at the front, then summary, then tail.
+    messages.length = 0;
+    for (const m of systems) messages.push(m);
+    messages.push(summaryMsg);
+    for (const m of tail) messages.push(m);
+
+    await this.eventBus.emit("compaction_done", {
+      runId,
+      sessionId,
+      before,
+      after: messages.length,
+      summary,
+    });
+  }
+
+  /**
+   * Public-facing manual compaction (called from `Agent.compact()`).
+   * Throws when a run is in flight.
+   */
+  async manualCompact(options?: {
+    keepRecentTurns?: number;
+    summaryModel?: LLMProvider;
+  }): Promise<{
+    summary: string;
+    beforeMessages: number;
+    afterMessages: number;
+    beforeTokens: number;
+    afterTokens: number;
+    droppedMessages: number;
+  }> {
+    if (this.activeRun) {
+      throw new Error("Agent.compact() cannot run while a run is in flight.");
+    }
+
+    // Load the latest history via collect_messages.
+    const messages: ModelMessage[] = [];
+    await this.eventBus.emit("collect_messages", {
+      sessionId: this.config.sessionId,
+      into: messages,
+    });
+
+    const beforeMessages = messages.length;
+    const beforeTokens = estimateTokens(messages);
+
+    const keep = options?.keepRecentTurns ?? this.config.macroCompression?.keepRecentTurns ?? 3;
+
+    const partition = partitionByTurns(messages, keep);
+    if (partition.evictableIndices.size === 0) {
+      return {
+        summary: "",
+        beforeMessages,
+        afterMessages: messages.length,
+        beforeTokens,
+        afterTokens: beforeTokens,
+        droppedMessages: 0,
+      };
+    }
+
+    // Save a temporary macroCompression with the override; reuse runMacroCompact.
+    const savedMc = this.config.macroCompression;
+    const overrideMc = {
+      enabled: true,
+      threshold: 0,
+      keepRecentTurns: keep,
+      summaryModel: options?.summaryModel ?? savedMc?.summaryModel,
+      summaryPrompt: savedMc?.summaryPrompt,
+      manualOnly: false,
+    };
+    (this.config as ResolvedAgentConfig & { macroCompression: typeof overrideMc }).macroCompression =
+      overrideMc;
+    try {
+      await this.runMacroCompact(
+        messages,
+        "manual",
+        this.config.sessionId,
+        options?.summaryModel ?? savedMc?.summaryModel,
+        undefined,
+      );
+    } finally {
+      (this.config as { macroCompression: typeof savedMc }).macroCompression = savedMc;
+    }
+
+    const summaryMsg = messages.find(
+      (m) =>
+        m.role === "user" &&
+        typeof m.content === "string" &&
+        m.content.startsWith(SUMMARY_MESSAGE_PREFIX),
+    );
+
+    return {
+      summary: typeof summaryMsg?.content === "string" ? summaryMsg.content : "",
+      beforeMessages,
+      afterMessages: messages.length,
+      beforeTokens,
+      afterTokens: estimateTokens(messages),
+      droppedMessages: beforeMessages - messages.length,
+    };
+  }
+
+  /** Expose EventBus for built-in tools that need to fan out events. */
+  getEventBus(): EventBus {
+    return this.eventBus;
+  }
+
+  /** Expose the ToolRegistry for inspection (used by Agent.listVisibleTools). */
+  getToolRegistry(): ToolRegistry {
+    return this.toolRegistry;
   }
 
   /**
@@ -287,6 +552,18 @@ export class AgentRuntime {
           return;
         }
 
+        // Micro compression: emit so plugins (e.g. MemoryPlugin) can rewrite
+        // older tool messages into placeholders.
+        await this.eventBus.emit("compact_messages", {
+          messages,
+          keepRecentTurns: this.resolvedKeepRecentTurns(),
+          runId,
+          sessionId,
+        });
+
+        // Macro compression: between-turns auto-trigger.
+        await this.maybeMacroCompact(messages, runId, sessionId, signal);
+
         await this.hookManager.emit("beforeModelCall", { messages });
 
         yield { type: "model_call_start", turn };
@@ -296,7 +573,7 @@ export class AgentRuntime {
         // will throw/settle when the user interrupts.
         const llmStream = this.config.model.stream({
           messages,
-          tools: this.toolRegistry.list().length > 0 ? this.toolRegistry.toModelTools() : undefined,
+          tools: this.toolRegistry.listActive().length > 0 ? this.toolRegistry.toModelTools() : undefined,
           signal,
         });
 
@@ -393,6 +670,7 @@ export class AgentRuntime {
             role: "tool",
             toolCallId: call.id,
             content: this.serializeToolOutput(record.output),
+            metadata: { toolName: call.name, status: record.status },
           });
         }
       }
@@ -537,4 +815,19 @@ export class AgentRuntime {
       await plugin.dispose?.();
     }
   }
+}
+
+/**
+ * Decide whether a tool is eligible for shadowing under the given tag rules.
+ * `alwaysActiveTags` always wins over `alwaysShadowTags`.
+ */
+function isShadowable(
+  tool: Tool,
+  alwaysActiveTags: string[],
+  alwaysShadowTags: string[],
+): boolean {
+  const tags = tool.tags ?? [];
+  if (alwaysActiveTags.some((t) => tags.includes(t))) return false;
+  if (alwaysShadowTags.some((t) => tags.includes(t))) return true;
+  return false;
 }

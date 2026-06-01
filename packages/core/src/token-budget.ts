@@ -4,6 +4,7 @@
 
 import type { TokenBudgetConfig } from "./agent-config.js";
 import type { ContextItem } from "./events.js";
+import { estimateStringTokens } from "./token-estimate.js";
 
 export interface BudgetAllocation {
   items: ContextItem[];
@@ -12,9 +13,9 @@ export interface BudgetAllocation {
 }
 
 export class TokenBudget {
-  private maxContextTokens: number;
-  private systemReserve: number;
-  private completionReserve: number;
+  readonly maxContextTokens: number;
+  readonly systemReserve: number;
+  readonly completionReserve: number;
 
   constructor(config: TokenBudgetConfig) {
     this.maxContextTokens = config.maxContextTokens ?? 128_000;
@@ -37,7 +38,7 @@ export class TokenBudget {
     let trimmed = 0;
 
     for (const item of sorted) {
-      const estimated = item.estimatedTokens ?? this.estimateTokens(item.content);
+      const estimated = item.estimatedTokens ?? estimateStringTokens(item.content);
 
       if (totalTokens + estimated <= availableTokens) {
         included.push(item);
@@ -48,13 +49,5 @@ export class TokenBudget {
     }
 
     return { items: included, totalTokens, trimmed };
-  }
-
-  /**
-   * Simple token estimation (rough: 1 token ≈ 4 chars for English, 2 chars for CJK).
-   */
-  private estimateTokens(content: string): number {
-    // Simple heuristic: count chars / 3 (works reasonably for mixed content)
-    return Math.ceil(content.length / 3);
   }
 }

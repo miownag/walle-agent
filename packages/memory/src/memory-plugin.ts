@@ -9,6 +9,11 @@ import type {
   ModelMessage,
   WallePlugin,
 } from "@walle-agent/core";
+import {
+  partitionByTurns,
+  buildPlaceholder,
+  isPlaceholder,
+} from "@walle-agent/core";
 
 import { MemoryManager } from "./memory-manager.js";
 import { SessionLog } from "./session-log.js";
@@ -17,6 +22,7 @@ import { buildRememberTools } from "./remember-tools.js";
 import type { MemoryPluginConfig, EvictedToolResult } from "./memory-types.js";
 
 const DEFAULT_ROOT = "./.walle";
+let warnedAboutLegacy = false;
 
 interface RunState {
   sessionId?: string;
@@ -38,10 +44,11 @@ export class MemoryPlugin implements WallePlugin {
   readonly manager!: MemoryManager;
   readonly sessionLog?: SessionLog;
   readonly vault?: ToolResultVault;
+  readonly keepRecentTurns: number;
 
   private readonly runs = new Map<string, RunState>();
   private readonly sessionsEnabled: boolean;
-  private readonly largeEnabled: boolean;
+  private readonly toolResultsEnabled: boolean;
   private readonly longTermEnabled: boolean;
   private readonly topK: number;
 
@@ -49,24 +56,44 @@ export class MemoryPlugin implements WallePlugin {
     const root = config.rootDir ?? DEFAULT_ROOT;
     this.rootDir = root;
 
+    // Merge legacy `largeToolResults` into `toolResults` (new wins).
+    const legacy = config.largeToolResults;
+    const next = config.toolResults;
+    if (legacy && !warnedAboutLegacy) {
+      warnedAboutLegacy = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[walle-memory] `largeToolResults` is deprecated; rename to `toolResults`.",
+      );
+    }
+    const toolResultsCfg = {
+      enabled: next?.enabled ?? legacy?.enabled ?? true,
+      dir: next?.dir ?? legacy?.dir,
+      thresholdChars: next?.thresholdChars ?? legacy?.thresholdChars ?? 0,
+      keepRecentTurns: next?.keepRecentTurns ?? 3,
+      previewHeadLines: next?.previewHeadLines ?? legacy?.previewHeadLines ?? 10,
+      previewTailLines: next?.previewTailLines ?? legacy?.previewTailLines ?? 10,
+    };
+
     this.sessionsEnabled = config.sessions?.enabled ?? true;
-    this.largeEnabled = config.largeToolResults?.enabled ?? true;
+    this.toolResultsEnabled = toolResultsCfg.enabled;
     this.longTermEnabled = config.longTerm?.enabled ?? true;
     this.topK = config.longTerm?.topK ?? 8;
+    this.keepRecentTurns = toolResultsCfg.keepRecentTurns;
 
     this.sessionsDir = config.sessions?.dir ?? path.join(root, "sessions");
     if (this.sessionsEnabled) {
       this.sessionLog = new SessionLog(this.sessionsDir);
     }
 
-    if (this.largeEnabled) {
+    if (this.toolResultsEnabled) {
       const dir =
-        config.largeToolResults?.dir ?? path.join(root, "memory", "large-tool-results");
+        toolResultsCfg.dir ?? path.join(root, "memory", "large-tool-results");
       this.vault = new ToolResultVault({
         dir,
-        thresholdChars: config.largeToolResults?.thresholdChars,
-        previewHeadLines: config.largeToolResults?.previewHeadLines,
-        previewTailLines: config.largeToolResults?.previewTailLines,
+        thresholdChars: toolResultsCfg.thresholdChars,
+        previewHeadLines: toolResultsCfg.previewHeadLines,
+        previewTailLines: toolResultsCfg.previewTailLines,
       });
     }
 
@@ -136,7 +163,7 @@ export class MemoryPlugin implements WallePlugin {
 
       let contentForDisk: string = raw;
 
-      if (this.largeEnabled && this.vault && this.vault.shouldEvict(raw)) {
+      if (this.toolResultsEnabled && this.vault && this.vault.shouldEvict(raw)) {
         const envelope = await this.vault.evict({
           toolCallId: record.id,
           toolName: record.name,
@@ -226,6 +253,86 @@ export class MemoryPlugin implements WallePlugin {
         };
         items.push(item);
       }
+    });
+
+    // ── Micro compression: rewrite older tool messages into placeholders ──
+    ctx.events.on("compact_messages", async ({ messages, keepRecentTurns }) => {
+      if (!this.toolResultsEnabled || !this.vault) return;
+      const k = keepRecentTurns ?? this.keepRecentTurns;
+      const partition = partitionByTurns(messages, k);
+      if (partition.evictableIndices.size === 0) return;
+
+      for (const i of partition.evictableIndices) {
+        const msg = messages[i];
+        if (msg.role !== "tool") continue;
+        if (isPlaceholder(msg.content)) continue;
+
+        // Already an envelope? Re-render with current preview/idx.
+        const envelope = tryDecodeEviction(msg.content);
+        if (envelope) {
+          const idx = (await this.vault.getIdx(envelope.toolCallId)) ?? 0;
+          messages[i] = {
+            ...msg,
+            content: buildPlaceholder({
+              idx,
+              toolName: envelope.toolName,
+              toolCallId: envelope.toolCallId,
+              size: envelope.size,
+              vaultPath: envelope.path,
+              preview: envelope.preview,
+            }),
+          };
+          continue;
+        }
+
+        // Live content — only rewrite when we have an evictable size.
+        const raw = typeof msg.content === "string" ? msg.content : "";
+        if (!raw) continue;
+        if (this.vault.thresholdChars > 0 && raw.length <= this.vault.thresholdChars) {
+          continue;
+        }
+        const toolCallId = msg.toolCallId;
+        if (!toolCallId) continue;
+        const toolName =
+          (msg.metadata?.toolName as string | undefined) ?? "unknown";
+        const status = msg.metadata?.status as
+          | "success"
+          | "error"
+          | "denied"
+          | "timeout"
+          | undefined;
+        const ev = await this.vault.ensure({
+          toolCallId,
+          toolName,
+          content: raw,
+          status,
+        });
+        messages[i] = {
+          ...msg,
+          content: buildPlaceholder({
+            idx: ev.idx,
+            toolName: ev.toolName,
+            toolCallId: ev.toolCallId,
+            size: ev.size,
+            vaultPath: ev.path,
+            preview: ev.preview,
+          }),
+        };
+      }
+    });
+
+    // ── read_tool_result backend ─────────────────────────────────────────
+    ctx.events.on("vault_read", async (payload) => {
+      if (!this.vault) return;
+      const slice = await this.vault.readSlice(payload.toolCallId, {
+        offset: payload.offset,
+        limit: payload.limit,
+      });
+      if (!slice) {
+        payload.result.value = { error: "tool result not found" };
+        return;
+      }
+      payload.result.value = slice;
     });
   }
 

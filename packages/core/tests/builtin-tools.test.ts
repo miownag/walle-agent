@@ -401,15 +401,15 @@ describe("write_todos tool", () => {
 // ─── BUILTIN_TOOLS Array ──────────────────────────────────────────
 
 describe("BUILTIN_TOOLS", () => {
-  it("should contain 9 tools", () => {
-    expect(BUILTIN_TOOLS).toHaveLength(9);
+  it("should contain 10 tools", () => {
+    expect(BUILTIN_TOOLS).toHaveLength(10);
   });
 
   it("should have all expected tool names", () => {
     const names = BUILTIN_TOOLS.map((t) => t.name);
     expect(names).toEqual([
       "ls", "read_file", "write_file", "edit_file", "glob", "grep",
-      "bash", "plan", "write_todos",
+      "bash", "plan", "write_todos", "read_tool_result",
     ]);
   });
 

@@ -279,3 +279,15 @@ if (provider.countTokens) {
 ```
 
 大多数场景下，估算足够准确（误差 < 10%），避免额外 API 调用开销。
+
+---
+
+## 与上下文压缩的协作
+
+`TokenBudget` 控制 `ContextItem[]`（memory / skills / RAG / tools 描述等）。
+`messages` 数组本身的体量由 [21 — Context Compression](./21-context-compression.md) 管控：
+
+- **Micro**（默认随 memory 启用）：每个 turn 顶部把更早 turn 的 tool result 改写为占位符。
+- **Macro**（opt-in）：估算 `estimateTokens(messages) > maxContextTokens × threshold` 时，在 turn 之间把 head 区间总结为一条 user 消息。
+
+两层共用 `core/src/token-estimate.ts` 里的 `estimateTokens()`。

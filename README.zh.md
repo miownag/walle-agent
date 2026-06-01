@@ -41,6 +41,8 @@ const result = await agent.run("帮我总结一下部署 runbook", {
 | **权限策略** | 一等公民：`mode`、`allowTools`、`denyTools`、`requireApprovalFor: { riskLevel, fileWrite, network, shell }`、异步 `approvalHandler`。 |
 | **沙箱执行** | `LocalSandbox`（execa）和 `DockerSandbox`，注册成 `shell` 工具，复用同一套风险标签。 |
 | **多 Agent** | `AgentTeam`(parallel / pipeline / debate / supervisor)、`Swarm` + `SwarmPolicy`、`Blackboard`、`createSubAgentTool`,以及对齐 Claude Code 的内置 **`task` 工具**(动态调度子 Agent)。 |
+| **上下文压缩** | 长 run 的两层防护：**micro** 把更早的 `role:"tool"` 消息改写成占位符（落盘到 vault，可用 `read_tool_result` 取回）；**macro** 在轮间或通过 `agent.compact()` 把头部对话总结成一条消息。 |
+| **Tool Search** | 工具数过多时,默认 shadow 掉带 `mcp` tag 的工具,通过两个内置工具暴露:`tool_search`(关键词 + 正则,带评分)和 `defer_execute_tool`(走 underlying tool 的权限策略调度任意已注册工具)。 |
 | **审计日志** | `TracePlugin` 写 JSONL 或内存；通过 `customStore` 注入即可对接 OTEL。 |
 | **Spec-Driven** | 每个包的设计沉淀在 [`docs/`](./docs/INDEX.md)，每个切片的实现备忘沉淀在 [`plans/`](./plans/)。 |
 
@@ -193,6 +195,59 @@ const agent = await Agent.create({
 `createTaskTool({ registry, defaultModel })` factory——详见
 [`docs/14-team-swarm.md`](./docs/14-team-swarm.md#dynamic-subagenttask-工具)。
 
+### 上下文压缩(micro + macro)
+
+两层机制约束长 run 的 token 体量。Micro 默认随 `MemoryPlugin` 启用;Macro 是 opt-in。
+
+```ts
+const agent = await Agent.create({
+  name: "Walle",
+  model,
+  plugins: [
+    new MemoryPlugin({
+      rootDir: "./.walle",
+      toolResults: { keepRecentTurns: 3 },     // micro:最近 N 轮保留原文
+    }),
+  ],
+  macroCompression: {
+    enabled: true,
+    threshold: 0.8,                            // est tokens > 80% × maxContextTokens
+    keepRecentTurns: 3,
+  },
+});
+
+// 主动触发宏压缩
+await agent.compact();
+```
+
+内置工具 `read_tool_result(toolCallId, offset?, limit?)` 可分页读取被逐出的 tool 结果。
+规格见 [`docs/21-context-compression.md`](./docs/21-context-compression.md)。
+
+### Tool Search(shadow registry + 动态发现)
+
+工具数过多时(典型场景:挂多个 MCP server),Walle 默认把 MCP 工具放到 shadow,
+通过两个内置工具按需暴露,避免每轮 LLM 调用塞 50+ 个工具的 JSON Schema。
+
+```ts
+const agent = await Agent.create({
+  name: "Walle",
+  model,
+  plugins: [/* MCPPlugin 等 */],
+  toolSearch: {
+    enabled: true,                  // 默认值
+    mode: "auto",                   // "auto" | "force" | "off"
+    threshold: 30,                  // mode=auto 时:总数 > 30 才生效
+    alwaysShadowTags: ["mcp"],
+    alwaysActiveTags: ["builtin"],
+  },
+});
+
+agent.listVisibleTools();           // 含 tool_search + defer_execute_tool
+agent.listHiddenTools();            // 被 shadow 的 MCP 工具
+```
+
+规格见 [`docs/22-tool-search.md`](./docs/22-tool-search.md)。
+
 把**所有**插件接到一个 Agent 上的端到端示例在
 [`examples/walle-complete.ts`](./examples/walle-complete.ts):
 
@@ -285,6 +340,8 @@ permissions）都通过 `WallePlugin.install()` 和强类型的 `EventBus` 接�
 | `pnpm rag`      | `SimpleRAGPlugin` + 自动注入 |
 | `pnpm trace`    | JSONL trace store + 回放 |
 | `pnpm sub-agents` | 通过内置 `task` 工具动态调度子 Agent |
+| `pnpm compaction` | 上下文压缩（micro + macro）演示 |
+| `pnpm tool-search` | 60 个伪 MCP 工具自动 shadow，通过 `tool_search` 重新发现 |
 | `pnpm complete` | 把所有插件接到一个 Agent 上（见 [`examples/walle-complete.ts`](./examples/walle-complete.ts)）|
 
 每个示例读 `examples/.env`：

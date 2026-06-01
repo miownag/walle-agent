@@ -17,6 +17,8 @@
     "rag": "pnpm --filter walle-agent-examples run rag",
     "trace": "pnpm --filter walle-agent-examples run trace",
     "sub-agents": "pnpm --filter walle-agent-examples run sub-agents",
+    "compaction": "pnpm --filter walle-agent-examples run compaction",
+    "tool-search": "pnpm --filter walle-agent-examples run tool-search",
     "complete": "pnpm --filter walle-agent-examples run complete"
   },
   "keywords": [

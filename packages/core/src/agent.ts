@@ -8,6 +8,9 @@ import { resolveConfig } from "./agent-config.js";
 import { AgentRuntime } from "./agent-runtime.js";
 import { AgentStream } from "./stream.js";
 import type { WallePlugin } from "./plugin.js";
+import type { EventBus } from "./events.js";
+import type { Tool } from "./tool.js";
+import type { LLMProvider } from "./llm-provider.js";
 
 /**
  * Narrow contract used by `Agent.resume` to validate a session on disk.
@@ -150,5 +153,44 @@ export class Agent {
   async dispose(): Promise<void> {
     this.interrupt("agent-dispose");
     await this.runtime.dispose();
+  }
+
+  /**
+   * Internal accessor for the runtime's EventBus. Used by built-in tools
+   * (e.g. `read_tool_result`, `tool_search`) that need to fan out events to
+   * plugins. Not part of the stable public API — prefer plugins for cross-
+   * cutting features.
+   */
+  getEventBus(): EventBus {
+    return this.runtime.getEventBus();
+  }
+
+  /** Tools currently visible to the LLM (active in the registry). */
+  listVisibleTools(): Tool[] {
+    return this.runtime.getToolRegistry().listActive();
+  }
+
+  /** Tools that are registered but hidden (shadowed) — reachable only via `defer_execute_tool`. */
+  listHiddenTools(): Tool[] {
+    return this.runtime.getToolRegistry().listShadowed();
+  }
+
+  /**
+   * Manually trigger macro (conversation summary) compaction. Requires
+   * `macroCompression` configured (or sensible defaults applied via the
+   * `summaryModel` option). Throws if a run is currently in flight.
+   */
+  async compact(options?: {
+    keepRecentTurns?: number;
+    summaryModel?: LLMProvider;
+  }): Promise<{
+    summary: string;
+    beforeMessages: number;
+    afterMessages: number;
+    beforeTokens: number;
+    afterTokens: number;
+    droppedMessages: number;
+  }> {
+    return this.runtime.manualCompact(options);
   }
 }

@@ -13,6 +13,8 @@
     "rag": "tsx rag.ts",
     "trace": "tsx trace.ts",
     "sub-agents": "tsx sub-agents.ts",
+    "compaction": "tsx context-compression.ts",
+    "tool-search": "tsx tool-search.ts",
     "complete": "tsx walle-complete.ts"
   },
   "dependencies": {

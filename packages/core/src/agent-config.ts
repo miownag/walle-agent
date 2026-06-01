@@ -65,6 +65,84 @@ export interface TokenBudgetConfig {
   completionReserve?: number;
 }
 
+// ─── Macro Compression Config ──────────────────────────────────────
+
+/**
+ * Configuration for the macro (conversation summary) compaction pass.
+ * Disabled by default (no implicit LLM cost). Enable by setting
+ * `macroCompression: { enabled: true }`.
+ *
+ * See `docs/21-context-compression.md` for the full semantics.
+ */
+export interface MacroCompressionConfig {
+  /** Default: false. Set true to opt-in. */
+  enabled?: boolean;
+  /**
+   * Threshold as a fraction of `tokenBudget.maxContextTokens`. When the
+   * estimated tokens of the live `messages` array exceeds this fraction,
+   * `AgentRuntime` runs macro compression at the top of the next turn.
+   * Default: 0.8.
+   */
+  threshold?: number;
+  /** How many recent assistant turns to preserve verbatim. Default: 3. */
+  keepRecentTurns?: number;
+  /**
+   * LLM used to produce the summary. Defaults to the agent's main `model`.
+   * Pass a cheaper provider here (e.g. Haiku) to keep cost low.
+   */
+  summaryModel?: LLMProvider;
+  /**
+   * Override the default summary prompt. Must contain the placeholder
+   * `{{messages}}` exactly once.
+   */
+  summaryPrompt?: string;
+  /**
+   * Skip the auto-trigger entirely; only `agent.compact()` runs macro.
+   * Default: false.
+   */
+  manualOnly?: boolean;
+}
+
+export interface ResolvedMacroCompressionConfig {
+  enabled: boolean;
+  threshold: number;
+  keepRecentTurns: number;
+  summaryModel?: LLMProvider;
+  summaryPrompt?: string;
+  manualOnly: boolean;
+}
+
+// ─── Tool Search Config ────────────────────────────────────────────
+
+/**
+ * Configuration for the dynamic tool search / defer-execute mechanism.
+ * When enabled and the registered tool count is large, MCP-tagged tools
+ * are moved to the registry's "shadow" set and the LLM uses two new tools
+ * (`tool_search`, `defer_execute_tool`) to discover and invoke them.
+ *
+ * See `docs/22-tool-search.md` for the full semantics.
+ */
+export interface ToolSearchConfig {
+  /** Default: true. Setting false is equivalent to `mode: "off"`. */
+  enabled?: boolean;
+  /** Default: "auto". */
+  mode?: "auto" | "force" | "off";
+  /** Total tool count required to flip from passthrough to shadow (auto only). Default: 30. */
+  threshold?: number;
+  /** Tool tags whose presence makes a tool eligible for shadow. Default: ["mcp"]. */
+  alwaysShadowTags?: string[];
+  /** Tool tags that override `alwaysShadowTags`; never shadowed. Default: ["builtin"]. */
+  alwaysActiveTags?: string[];
+}
+
+export interface ResolvedToolSearchConfig {
+  enabled: boolean;
+  mode: "auto" | "force" | "off";
+  threshold: number;
+  alwaysShadowTags: string[];
+  alwaysActiveTags: string[];
+}
+
 // ─── AgentConfig ───────────────────────────────────────────────────
 
 export interface BuiltinToolsConfig {
@@ -128,6 +206,16 @@ export interface AgentConfig {
    * pick one entry point.
    */
   subAgents?: SubAgentDefinition[];
+  /**
+   * Macro (conversation summary) compaction config. Default: disabled. See
+   * `docs/21-context-compression.md`.
+   */
+  macroCompression?: MacroCompressionConfig;
+  /**
+   * Tool search / shadow registry config. Default: enabled with `mode: "auto"`
+   * and `threshold: 30`. See `docs/22-tool-search.md`.
+   */
+  toolSearch?: ToolSearchConfig;
 }
 
 // ─── Resolved Config ───────────────────────────────────────────────
@@ -147,6 +235,8 @@ export interface ResolvedAgentConfig extends Required<Pick<AgentConfig, "name" |
   permissions?: PermissionPolicy;
   useBuiltinTools: boolean | BuiltinToolsConfig;
   subAgents: SubAgentDefinition[];
+  macroCompression: ResolvedMacroCompressionConfig | null;
+  toolSearch: ResolvedToolSearchConfig;
 }
 
 function newUuid(): string {
@@ -178,5 +268,36 @@ export function resolveConfig(config: AgentConfig): ResolvedAgentConfig {
     permissions: config.permissions,
     useBuiltinTools: config.useBuiltinTools ?? true,
     subAgents: config.subAgents ?? [],
+    macroCompression: resolveMacroCompression(config.macroCompression),
+    toolSearch: resolveToolSearch(config.toolSearch),
+  };
+}
+
+function resolveMacroCompression(
+  cfg: MacroCompressionConfig | undefined,
+): ResolvedMacroCompressionConfig | null {
+  if (!cfg) return null;
+  return {
+    enabled: cfg.enabled ?? false,
+    threshold: cfg.threshold ?? 0.8,
+    keepRecentTurns: cfg.keepRecentTurns ?? 3,
+    summaryModel: cfg.summaryModel,
+    summaryPrompt: cfg.summaryPrompt,
+    manualOnly: cfg.manualOnly ?? false,
+  };
+}
+
+function resolveToolSearch(cfg: ToolSearchConfig | undefined): ResolvedToolSearchConfig {
+  const enabled = cfg?.enabled ?? true;
+  const explicitMode = cfg?.mode;
+  const mode: ResolvedToolSearchConfig["mode"] = !enabled
+    ? "off"
+    : (explicitMode ?? "auto");
+  return {
+    enabled,
+    mode,
+    threshold: cfg?.threshold ?? 30,
+    alwaysShadowTags: cfg?.alwaysShadowTags ?? ["mcp"],
+    alwaysActiveTags: cfg?.alwaysActiveTags ?? ["builtin"],
   };
 }

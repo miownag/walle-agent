@@ -117,16 +117,40 @@ export interface MemoryPluginConfig {
     dir?: string;
   };
 
+  /**
+   * @deprecated Renamed to `toolResults`. The legacy field is still accepted
+   * (with a one-shot console warning) and merged into `toolResults` semantics.
+   */
   largeToolResults?: {
     /** Default: true. */
     enabled?: boolean;
     /** Override the default `<rootDir>/memory/large-tool-results`. */
     dir?: string;
-    /** Character threshold over which a tool result is evicted. Default: 20000. */
+    /** Character threshold over which a tool result is evicted. Default: 0 (always). */
     thresholdChars?: number;
-    /** Lines of the head preview. Default: 30. */
+    /** Lines of the head preview. Default: 10. */
     previewHeadLines?: number;
-    /** Lines of the tail preview. Default: 30. */
+    /** Lines of the tail preview. Default: 10. */
+    previewTailLines?: number;
+  };
+
+  /**
+   * Tool result vault configuration. Drives both the legacy "evict large
+   * outputs to disk" behaviour and the new turn-based "micro" context
+   * compression — see `docs/21-context-compression.md`.
+   */
+  toolResults?: {
+    /** Default: true. */
+    enabled?: boolean;
+    /** Override the default `<rootDir>/memory/large-tool-results`. */
+    dir?: string;
+    /** Character threshold over which a tool result is evicted. 0 = always. Default: 0. */
+    thresholdChars?: number;
+    /** How many recent assistant turns to leave verbatim before eviction kicks in. Default: 3. */
+    keepRecentTurns?: number;
+    /** Lines of the head preview. Default: 10. */
+    previewHeadLines?: number;
+    /** Lines of the tail preview. Default: 10. */
     previewTailLines?: number;
   };
 

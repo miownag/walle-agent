@@ -75,4 +75,53 @@ describe("ToolRegistry", () => {
     registry.unregister("test_tool");
     expect(registry.has("test_tool")).toBe(false);
   });
+
+  describe("shadow API", () => {
+    it("registers as shadowed when opts.shadow=true", () => {
+      const registry = new ToolRegistry();
+      registry.register(mockTool, { shadow: true });
+      expect(registry.isShadowed("test_tool")).toBe(true);
+      expect(registry.listActive()).toHaveLength(0);
+      expect(registry.listShadowed()).toHaveLength(1);
+      expect(registry.list()).toHaveLength(1);
+    });
+
+    it("toModelTools excludes shadowed tools", () => {
+      const registry = new ToolRegistry();
+      registry.register(mockTool);
+      registry.register({ ...mockTool, name: "shadow_one", tags: ["mcp"] });
+      registry.shadow("shadow_one");
+      const tools = registry.toModelTools();
+      expect(tools.map((t) => t.function.name)).toEqual(["test_tool"]);
+    });
+
+    it("get() returns shadowed tools", () => {
+      const registry = new ToolRegistry();
+      registry.register(mockTool, { shadow: true });
+      expect(registry.get("test_tool")).toBe(mockTool);
+    });
+
+    it("shadow returns false for unknown tools", () => {
+      const registry = new ToolRegistry();
+      expect(registry.shadow("nope")).toBe(false);
+    });
+
+    it("unshadow round-trips", () => {
+      const registry = new ToolRegistry();
+      registry.register(mockTool);
+      registry.shadow("test_tool");
+      expect(registry.isShadowed("test_tool")).toBe(true);
+      expect(registry.unshadow("test_tool")).toBe(true);
+      expect(registry.isShadowed("test_tool")).toBe(false);
+      expect(registry.unshadow("test_tool")).toBe(false);
+    });
+
+    it("unregister also clears shadow flag", () => {
+      const registry = new ToolRegistry();
+      registry.register(mockTool, { shadow: true });
+      registry.unregister("test_tool");
+      registry.register(mockTool); // re-register
+      expect(registry.isShadowed("test_tool")).toBe(false);
+    });
+  });
 });

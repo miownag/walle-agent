@@ -14,6 +14,10 @@ export type {
   ResolvedAgentConfig,
   TokenBudgetConfig,
   BuiltinToolsConfig,
+  MacroCompressionConfig,
+  ResolvedMacroCompressionConfig,
+  ToolSearchConfig,
+  ResolvedToolSearchConfig,
 } from "./agent-config.js";
 
 // Permissions
@@ -92,6 +96,27 @@ export { AgentContextImpl } from "./agent-context.js";
 export { TokenBudget } from "./token-budget.js";
 export type { BudgetAllocation } from "./token-budget.js";
 
+// Token estimator
+export { estimateTokens, estimateStringTokens } from "./token-estimate.js";
+
+// Message compaction
+export {
+  partitionByTurns,
+  buildPlaceholder,
+  isPlaceholder,
+  TOOL_RESULT_PLACEHOLDER_PREFIX,
+} from "./message-compactor.js";
+export type { PartitionResult, PlaceholderInput } from "./message-compactor.js";
+
+// Conversation summarizer
+export {
+  summariseConversation,
+  renderMessagesForSummary,
+  DEFAULT_SUMMARY_PROMPT,
+  SUMMARY_MESSAGE_PREFIX,
+} from "./conversation-summarizer.js";
+export type { SummariseInput } from "./conversation-summarizer.js";
+
 // Prompt Builder
 export { PromptBuilder } from "./prompt-builder.js";
 
@@ -116,6 +141,16 @@ export {
   clearTodoStore,
   createTaskTool,
   TASK_TOOL_NAME,
+  readToolResultTool,
+  READ_TOOL_RESULT_NAME,
+  createToolSearchTool,
+  TOOL_SEARCH_NAME,
+  DEFER_EXECUTE_NAME,
+  buildToolSearchDescription,
+  compileKeyword,
+  scoreTool,
+  deriveServerName,
+  createDeferExecuteTool,
 } from "./builtin-tools/index.js";
 export type { Plan, PlanStep, PlanToolInput } from "./builtin-tools/index.js";
 export type {
@@ -124,6 +159,19 @@ export type {
   TaskToolSuccessOutput,
   TaskToolErrorOutput,
   CreateTaskToolOptions,
+  ReadToolResultInput,
+  ReadToolResultOutput,
+  ReadToolResultErrorOutput,
+  ToolSearchInput,
+  ToolSearchOutput,
+  ToolSearchMatch,
+  ToolSearchErrorOutput,
+  CreateToolSearchOptions,
+  DeferExecuteInput,
+  DeferExecuteOutput,
+  DeferExecuteErrorOutput,
+  CreateDeferExecuteOptions,
+  CheckPermissionFn,
 } from "./builtin-tools/index.js";
 
 // Sub-agent registry

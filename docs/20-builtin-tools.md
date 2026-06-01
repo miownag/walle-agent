@@ -22,7 +22,10 @@ Built-in工具直接内置在 `@walle-agent/core` 中，创建 Agent 时**默认
 | bash | shell | high | Yes | 执行 shell 命令 |
 | plan | planning | low | No | 创建/管理结构化执行计划 |
 | write_todos | task | low | No | 任务列表管理 |
+| read_tool_result | context | low | No | 按 toolCallId 读取被 micro 压缩逐出的 tool 结果（见 [21](./21-context-compression.md)） |
 | task | sub-agent | low | No | 动态派发任务给已注册的 sub-agent 类型（见 [14-team-swarm.md](./14-team-swarm.md#dynamic-subagenttask-工具)） |
+| tool_search | tool-search | low | No | 搜索（含被 shadow 的）工具，配合 `defer_execute_tool` 使用（见 [22](./22-tool-search.md)） |
+| defer_execute_tool | tool-search | low | No | 按 qualifiedName 调用任意已注册工具，权限走 underlying tool 的 policy |
 
 ## 默认行为
 

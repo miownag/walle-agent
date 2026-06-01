@@ -76,7 +76,7 @@ Run from the repo root unless noted.
 | `pnpm test:watch` | Watch-mode tests |
 | `pnpm lint` | ESLint over `packages/*/src/**/*.ts` |
 | `pnpm clean` | Remove all `dist/` outputs |
-| `pnpm basic` / `stream` / `memory` / `evolution` / `mcp` / `rag` / `trace` / `sub-agents` / `complete` | Run the matching example via `tsx` |
+| `pnpm basic` / `stream` / `memory` / `evolution` / `mcp` / `rag` / `trace` / `sub-agents` / `compaction` / `tool-search` / `complete` | Run the matching example via `tsx` |
 
 Node `>= 20`, pnpm `10.29.x` (see `packageManager`).
 
@@ -194,3 +194,87 @@ The pre-existing `createSubAgentTool` (static wrapper, one `delegate_<slug>`
 tool per Agent instance) stays as the long-lived "specialists already
 instantiated" pattern; the new `task` tool is the dynamic-dispatch
 counterpart. Both can be combined on the same parent Agent.
+
+---
+
+## Context Compression (micro + macro)
+
+Walle keeps long-running conversations under control with two layers:
+
+```ts
+const agent = await Agent.create({
+  name: "Walle",
+  model,
+  plugins: [
+    new MemoryPlugin({
+      rootDir: "./.walle",
+      toolResults: {
+        // Most recent N assistant turns stay verbatim in the live messages
+        // array; older tool results become placeholders pointing at on-disk
+        // copies, reachable via `read_tool_result`.
+        keepRecentTurns: 3,
+        thresholdChars: 0,        // 0 = always evict to disk
+        previewHeadLines: 10,
+        previewTailLines: 10,
+      },
+    }),
+  ],
+  // Macro is opt-in (an extra LLM call summarises the head region).
+  macroCompression: {
+    enabled: true,
+    threshold: 0.8,               // est tokens > 80% maxContextTokens
+    keepRecentTurns: 3,
+  },
+});
+
+// Manual trigger
+await agent.compact();
+```
+
+- **Micro**: per-turn rewrite of older `role: "tool"` messages into placeholder
+  text (`[ToolResult #N evicted | toolCallId=… | …]`). Backed by the existing
+  `ToolResultVault` on disk.
+- **Macro**: between-turn (or manual) summary of the head region into a single
+  `[Summary of N earlier messages]` user message; preserves system messages
+  and the most recent N assistant turns.
+- **read_tool_result**: built-in tool — line-paginated read of any evicted
+  tool result by its `toolCallId`. Requires `@walle-agent/memory`.
+
+Spec: [`docs/21-context-compression.md`](./docs/21-context-compression.md).
+Plan: [`plans/context-compression/`](./plans/context-compression/).
+
+---
+
+## Tool Search (shadow registry + dynamic discovery)
+
+When the registered tool count is large (typical with multiple MCP servers),
+Walle hides MCP-tagged tools behind two helpers so each LLM turn doesn't
+have to ship 50+ JSON schemas.
+
+```ts
+const agent = await Agent.create({
+  name: "Walle",
+  model,
+  plugins: [/* MCPPlugin etc. */],
+  toolSearch: {
+    enabled: true,                   // default: true
+    mode: "auto",                    // "auto" | "force" | "off"
+    threshold: 30,                   // auto: shadow only when total > N
+    alwaysShadowTags: ["mcp"],       // default
+    alwaysActiveTags: ["builtin"],   // default
+  },
+});
+
+// Inspect:
+agent.listVisibleTools();            // includes tool_search + defer_execute_tool
+agent.listHiddenTools();             // shadowed MCP tools
+```
+
+- `tool_search({ keywords, servers?, tags?, limit? })` — keyword + regex
+  search across all registered tools (active + shadowed). Returns ranked
+  matches with their full schemas.
+- `defer_execute_tool({ qualifiedName, arguments })` — invoke a hidden tool
+  by qualifiedName. Goes through the standard permission policy.
+
+Spec: [`docs/22-tool-search.md`](./docs/22-tool-search.md).
+Plan: [`plans/tool-search/`](./plans/tool-search/).

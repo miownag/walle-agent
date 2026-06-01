@@ -42,6 +42,8 @@ const result = await agent.run("Summarise the deploy runbook for me.", {
 | **Permissions** | First-class policy: `mode`, `allowTools`, `denyTools`, `requireApprovalFor: { riskLevel, fileWrite, network, shell }`, async `approvalHandler`. |
 | **Sandbox** | `LocalSandbox` (execa) and `DockerSandbox` registered behind a `shell` tool with the same risk gating. |
 | **Multi-agent** | `AgentTeam` (parallel / pipeline / debate / supervisor), `Swarm` + `SwarmPolicy`, `Blackboard`, `createSubAgentTool`, plus a built-in **`task` tool** for Claude-Code-style dynamic sub-agent dispatch. |
+| **Context compression** | Two-layer guard for long runs: **micro** rewrites older `role:"tool"` messages into placeholders backed by an on-disk vault (`read_tool_result` to read them back); **macro** summarises the head region between turns or via `agent.compact()`. |
+| **Tool search** | When MCP tool count gets large, default-shadow MCP-tagged tools and surface them via two helpers: `tool_search` (keyword + regex matching with score-ranked results) and `defer_execute_tool` (delegated invocation through the standard permission policy). |
 | **Audit trail** | `TracePlugin` records every event to JSONL or in-memory; OTEL-friendly via `customStore` injection. |
 | **Spec-driven** | Every package's design is captured in [`docs/`](./docs/INDEX.md) and the per-slice deltas live in [`plans/`](./plans/). |
 
@@ -197,6 +199,61 @@ Plugin form (`@walle-agent/team`'s `SubAgentsPlugin`) and a low-level
 `createTaskTool({ registry, defaultModel })` factory are also available — see
 [`docs/14-team-swarm.md`](./docs/14-team-swarm.md#dynamic-subagenttask-工具).
 
+### Context compression (micro + macro)
+
+Two layers keep long runs under control. Both are wired into core; micro
+needs `MemoryPlugin` for disk persistence; macro is opt-in.
+
+```ts
+const agent = await Agent.create({
+  name: "Walle",
+  model,
+  plugins: [
+    new MemoryPlugin({
+      rootDir: "./.walle",
+      toolResults: { keepRecentTurns: 3 },     // micro: per-turn placeholders
+    }),
+  ],
+  macroCompression: {
+    enabled: true,
+    threshold: 0.8,                            // % of maxContextTokens
+    keepRecentTurns: 3,
+  },
+});
+
+// Manual macro compaction
+await agent.compact();
+```
+
+The built-in `read_tool_result(toolCallId, offset?, limit?)` tool pages back
+into any evicted result. Spec: [`docs/21-context-compression.md`](./docs/21-context-compression.md).
+
+### Tool search (shadow registry + dynamic discovery)
+
+When the registered tool count is large (typical with multiple MCP servers),
+Walle hides MCP-tagged tools by default and surfaces them through two
+helpers, so each LLM turn doesn't have to ship 50+ JSON schemas.
+
+```ts
+const agent = await Agent.create({
+  name: "Walle",
+  model,
+  plugins: [/* MCPPlugin etc. */],
+  toolSearch: {
+    enabled: true,                  // default
+    mode: "auto",                   // "auto" | "force" | "off"
+    threshold: 30,                  // shadow only when total > N (auto)
+    alwaysShadowTags: ["mcp"],
+    alwaysActiveTags: ["builtin"],
+  },
+});
+
+agent.listVisibleTools();           // includes tool_search + defer_execute_tool
+agent.listHiddenTools();            // shadowed MCP tools
+```
+
+Spec: [`docs/22-tool-search.md`](./docs/22-tool-search.md).
+
 A complete end-to-end example wiring **every** plugin into one agent lives at
 [`examples/walle-complete.ts`](./examples/walle-complete.ts):
 
@@ -291,6 +348,8 @@ Three triggers (any combination via config), file-backed proposal queue, async
 | `pnpm rag`      | `SimpleRAGPlugin` + auto-inject |
 | `pnpm trace`    | JSONL trace store + replay |
 | `pnpm sub-agents` | Dynamic sub-agent dispatch via the built-in `task` tool |
+| `pnpm compaction` | Micro + macro context compression with `MemoryPlugin` |
+| `pnpm tool-search` | 60 fake MCP tools auto-shadowed; rediscovery via `tool_search` |
 | `pnpm complete` | All plugins wired into one agent (see [`examples/walle-complete.ts`](./examples/walle-complete.ts)) |
 
 Each example reads `examples/.env`:

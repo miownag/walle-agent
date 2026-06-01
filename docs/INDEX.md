@@ -40,6 +40,10 @@
 | 18 | [Roadmap](./18-roadmap.md) | 实现路线图（已修正阶段划分） |
 | 19 | [Plugin System](./19-plugin-system.md) | Plugin 接口、AgentContext、生命周期 |
 | 20 | [Built-in Tools](./20-builtin-tools.md) | 内置工具（core 自动注册）：文件系统、Shell、Plan、Task Management |
+| 21 | [Context Compression](./21-context-compression.md) | Micro（按 turn 逐出 tool result）+ Macro（对话摘要）双层压缩 |
+| 22 | [Tool Search](./22-tool-search.md) | ToolRegistry shadow + `tool_search` / `defer_execute_tool` 内置工具 |
+| 21 | [Context Compression](./21-context-compression.md) | Micro（按 turn 逐出 tool result）+ Macro（对话摘要）双层压缩 |
+| 22 | [Tool Search](./22-tool-search.md) | ToolRegistry shadow + `tool_search` / `defer_execute_tool` 内置工具 |
 
 ---
 

@@ -90,6 +90,10 @@ messages = this.promptBuilder.build({
 
 ## 大 Tool Result 外溢（eviction）
 
+> **v0.2 update**: 这一节的 size-based 落盘 + envelope 占位机制保留作为兼容入口；
+> 在 v0.2 里 `ToolResultVault` 进一步成为 **turn-based micro 压缩**（`compact_messages` 事件 + `read_tool_result` 工具）的后端。
+> 完整规格见 [`21-context-compression.md`](./21-context-compression.md)。
+
 Tool call 返回超过阈值（默认 `20000` chars，参考 `deepagents`）的内容时：
 
 1. **当前 run** 内存里的 `messages[]` **保持完整** —— agent 仍需要对结果做推理。
