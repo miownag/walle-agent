@@ -114,5 +114,18 @@ export {
   clearPlanStore,
   getTodoStore,
   clearTodoStore,
+  createTaskTool,
+  TASK_TOOL_NAME,
 } from "./builtin-tools/index.js";
 export type { Plan, PlanStep, PlanToolInput } from "./builtin-tools/index.js";
+export type {
+  TaskToolInput,
+  TaskToolOutput,
+  TaskToolSuccessOutput,
+  TaskToolErrorOutput,
+  CreateTaskToolOptions,
+} from "./builtin-tools/index.js";
+
+// Sub-agent registry
+export { SubAgentRegistry } from "./sub-agent-registry.js";
+export type { SubAgentDefinition } from "./sub-agent-registry.js";

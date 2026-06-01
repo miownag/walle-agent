@@ -13,6 +13,7 @@ import type { TokenUsage, Attachment } from "./types.js";
 import type { ContentBlock } from "./message.js";
 import type { AgentStreamEvent } from "./stream.js";
 import type { PermissionPolicy } from "./permissions.js";
+import type { SubAgentDefinition } from "./sub-agent-registry.js";
 
 // Re-export so existing imports (`@walle-agent/core`) keep working.
 export type { PermissionPolicy, PermissionDecision, ApprovalRequest } from "./permissions.js";
@@ -112,11 +113,21 @@ export interface AgentConfig {
   permissions?: PermissionPolicy;
   /**
    * Built-in tools configuration.
-   * - true (default): register all built-in tools (ls, read_file, write_file, edit_file, glob, grep, bash, plan, write_todos)
+   * - true (default): register all built-in tools (ls, read_file, write_file, edit_file, glob, grep, bash, plan, write_todos, task)
    * - false: disable all built-in tools
    * - BuiltinToolsConfig: fine-grained control via include/exclude
    */
   useBuiltinTools?: boolean | BuiltinToolsConfig;
+  /**
+   * Sub-agent type definitions surfaced to the parent LLM via the built-in
+   * `task` tool. Each entry can be dispatched dynamically by the parent
+   * model with `{ subagent_type, description, prompt }`. See
+   * `docs/14-team-swarm.md#dynamic-subagenttask-工具` for the full design.
+   *
+   * Mutually exclusive with `SubAgentsPlugin` (from `@walle-agent/team`):
+   * pick one entry point.
+   */
+  subAgents?: SubAgentDefinition[];
 }
 
 // ─── Resolved Config ───────────────────────────────────────────────
@@ -135,6 +146,7 @@ export interface ResolvedAgentConfig extends Required<Pick<AgentConfig, "name" |
   maxToolCallsPerTurn: number;
   permissions?: PermissionPolicy;
   useBuiltinTools: boolean | BuiltinToolsConfig;
+  subAgents: SubAgentDefinition[];
 }
 
 function newUuid(): string {
@@ -165,5 +177,6 @@ export function resolveConfig(config: AgentConfig): ResolvedAgentConfig {
     maxToolCallsPerTurn: config.maxToolCallsPerTurn ?? 10,
     permissions: config.permissions,
     useBuiltinTools: config.useBuiltinTools ?? true,
+    subAgents: config.subAgents ?? [],
   };
 }

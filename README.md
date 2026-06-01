@@ -41,7 +41,7 @@ const result = await agent.run("Summarise the deploy runbook for me.", {
 | **Interrupt + resume** | `agent.interrupt()` is honoured cooperatively; cancelled tool outputs rehydrate on `Agent.resume(sessionId, ...)`. |
 | **Permissions** | First-class policy: `mode`, `allowTools`, `denyTools`, `requireApprovalFor: { riskLevel, fileWrite, network, shell }`, async `approvalHandler`. |
 | **Sandbox** | `LocalSandbox` (execa) and `DockerSandbox` registered behind a `shell` tool with the same risk gating. |
-| **Multi-agent** | `AgentTeam` (parallel / pipeline / debate / supervisor), `Swarm` + `SwarmPolicy`, `Blackboard`, `createSubAgentTool`. |
+| **Multi-agent** | `AgentTeam` (parallel / pipeline / debate / supervisor), `Swarm` + `SwarmPolicy`, `Blackboard`, `createSubAgentTool`, plus a built-in **`task` tool** for Claude-Code-style dynamic sub-agent dispatch. |
 | **Audit trail** | `TracePlugin` records every event to JSONL or in-memory; OTEL-friendly via `customStore` injection. |
 | **Spec-driven** | Every package's design is captured in [`docs/`](./docs/INDEX.md) and the per-slice deltas live in [`plans/`](./plans/). |
 
@@ -74,7 +74,7 @@ fallbacks.
 | [`@walle-agent/evolution`](./packages/evolution) | Memory + skill extraction engine, file-backed proposal queue, approval callback | [15](./docs/15-self-evolution.md) |
 | [`@walle-agent/mcp`](./packages/mcp) | MCP client manager, stdio + Streamable-HTTP transports, tool whitelist/blacklist | [07](./docs/07-mcp.md) |
 | [`@walle-agent/sandbox`](./packages/sandbox) | `Sandbox` interface, `LocalSandbox` (execa), `DockerSandbox`, `shell` tool registration | [11](./docs/11-sandbox.md) |
-| [`@walle-agent/team`](./packages/team) | `AgentTeam` (parallel / pipeline / debate / supervisor), `Swarm`, `Blackboard`, `createSubAgentTool`, `createSupervisorTeam` | [14](./docs/14-team-swarm.md) |
+| [`@walle-agent/team`](./packages/team) | `AgentTeam` (parallel / pipeline / debate / supervisor), `Swarm`, `Blackboard`, `createSubAgentTool`, `createSupervisorTeam`, `SubAgentsPlugin` | [14](./docs/14-team-swarm.md) |
 | [`@walle-agent/rag`](./packages/rag) | `RAGPlugin` interface + `SimpleRAGPlugin` (file-keyword retriever) — auto-injected via `collect_context` | [10](./docs/10-rag.md) |
 | [`@walle-agent/trace`](./packages/trace) | `TracePlugin` + `JSONLTraceStore` + `InMemoryTraceStore`; redaction, sampling, custom-store injection | [16](./docs/16-trace.md) |
 
@@ -166,6 +166,36 @@ const team = await createSupervisorTeam({
 
 const out = await team.run("Customer reports checkout failure", { strategy: "supervisor" });
 ```
+
+### Dynamic sub-agents (Claude-Code-style `task` tool)
+
+Register sub-agent **types** up front; the parent LLM dispatches dynamically
+through a built-in `task` tool. Each call spins up a fresh sub-agent, runs
+the prompt to completion, and disposes it. Only the final summary returns to
+the parent — intermediate tool messages stay isolated.
+
+```ts
+const agent = await Agent.create({
+  name: "Walle",
+  model,
+  subAgents: [
+    {
+      type: "researcher",
+      description: "Web research and concise summarization",
+      systemPrompt: "You are a research specialist…",
+      tools: [webSearchTool],
+    },
+    { type: "code-reviewer", systemPrompt: "Review code for bugs…" },
+  ],
+});
+
+// The parent LLM sees a single `task` tool and dispatches with:
+//   { subagent_type: "researcher", description: "find X", prompt: "…" }
+```
+
+Plugin form (`@walle-agent/team`'s `SubAgentsPlugin`) and a low-level
+`createTaskTool({ registry, defaultModel })` factory are also available — see
+[`docs/14-team-swarm.md`](./docs/14-team-swarm.md#dynamic-subagenttask-工具).
 
 A complete end-to-end example wiring **every** plugin into one agent lives at
 [`examples/walle-complete.ts`](./examples/walle-complete.ts):
@@ -260,6 +290,7 @@ Three triggers (any combination via config), file-backed proposal queue, async
 | `pnpm mcp`      | Filesystem MCP server via stdio |
 | `pnpm rag`      | `SimpleRAGPlugin` + auto-inject |
 | `pnpm trace`    | JSONL trace store + replay |
+| `pnpm sub-agents` | Dynamic sub-agent dispatch via the built-in `task` tool |
 | `pnpm complete` | All plugins wired into one agent (see [`examples/walle-complete.ts`](./examples/walle-complete.ts)) |
 
 Each example reads `examples/.env`:
@@ -286,7 +317,7 @@ MODEL=gpt-4o-mini
 Per-phase plans live under [`plans/`](./plans/); the canonical roadmap is
 [`docs/18-roadmap.md`](./docs/18-roadmap.md).
 
-**MVP is complete.** 11 packages, 41 test files, 321 tests passing on the
+**MVP is complete.** 11 packages, 44 test files, 348 tests passing on the
 current branch.
 
 ---

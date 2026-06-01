@@ -22,6 +22,7 @@ Built-in工具直接内置在 `@walle-agent/core` 中，创建 Agent 时**默认
 | bash | shell | high | Yes | 执行 shell 命令 |
 | plan | planning | low | No | 创建/管理结构化执行计划 |
 | write_todos | task | low | No | 任务列表管理 |
+| task | sub-agent | low | No | 动态派发任务给已注册的 sub-agent 类型（见 [14-team-swarm.md](./14-team-swarm.md#dynamic-subagenttask-工具)） |
 
 ## 默认行为
 
@@ -157,25 +158,63 @@ Plan 的 status 会自动更新：当所有 steps 为 completed/skipped 时，pl
 input: { action: "add"|"list"|"complete"|"remove"|"clear"; task?: string; taskId?: string; listName?: string }
 ```
 
+### task
+
+动态派发任务给已注册的 sub-agent 类型。完整概念与多种装配入口（糖语法、
+`SubAgentsPlugin`、`createTaskTool` factory）见 [14-team-swarm.md](./14-team-swarm.md#dynamic-subagenttask-工具)。
+
+```ts
+input: {
+  subagent_type: string;  // 已注册的类型名
+  description: string;    // 短摘要（3-5 词），主 Agent UI 展示
+  prompt: string;         // 实际派发给 sub-agent 的任务
+}
+
+// 默认输出
+output: { result: string }
+
+// 当 SubAgentDefinition.verbose === true
+output: { result: string; messages: ModelMessage[]; toolCalls: ToolCallRecord[] }
+
+// 未注册的 subagent_type
+output: { error: string; available: string[] }   // 不抛异常,让 LLM 自行纠正
+```
+
+**与其他 built-in 工具的区别**:`task` 工具的入参 schema 把已注册 types 动态
+枚举进 `subagent_type` 的 description——所以它**不能**是 module 级单例,而是
+每个 Agent 实例化时**单独构造**一份。`BUILTIN_TOOLS` 数组里**不**包含它;
+`AgentRuntime.registerBuiltinTools()` 内部用当前 Agent 的
+`SubAgentRegistry` + `createTaskTool({...})` factory 构造。
+
+**生命周期**:每次调用都 `Agent.create(...)` → `agent.run(prompt)` →
+`agent.dispose()`(`finally` 块);父 signal abort 透传给 sub-agent。
+
+**默认行为**:与其他 built-in 一样默认启用;`useBuiltinTools: { excludeTools: ["task"] }`
+可关闭。Sub-agent 自己的 `useBuiltinTools` 默认 `false`(防递归)。
+
 ## 实现架构
 
 ```
 packages/core/src/
 ├── builtin-tools/
-│   ├── index.ts            # 汇总导出 + BUILTIN_TOOLS 数组
+│   ├── index.ts            # 汇总导出 + BUILTIN_TOOLS 数组（不含 task,见下）
 │   ├── filesystem-tools.ts # ls, read_file, write_file, edit_file, glob, grep
 │   ├── shell-tool.ts       # bash
 │   ├── plan-tool.ts        # plan
-│   └── todo-tool.ts        # write_todos
-├── agent-config.ts         # BuiltinToolsConfig + useBuiltinTools 选项
-├── agent-runtime.ts        # init() 中自动注册 + registerBuiltinTools()
-└── index.ts                # 公开导出所有内置工具
+│   ├── todo-tool.ts        # write_todos
+│   └── task-tool.ts        # task — createTaskTool({registry, defaultModel?}) factory
+├── sub-agent-registry.ts   # SubAgentRegistry + SubAgentDefinition
+├── agent-config.ts         # BuiltinToolsConfig + useBuiltinTools + subAgents
+├── agent-runtime.ts        # init() 中自动注册 + registerBuiltinTools() + 构建 task tool
+└── index.ts                # 公开导出所有内置工具 + SubAgentRegistry/createTaskTool
 ```
 
 关键设计：
 - 内置工具在 `AgentRuntime.init()` 中**先于**用户工具注册
 - 用户通过 `tools: [...]` 传入的工具可以覆盖同名内置工具
 - 不耦合：core 不依赖外部包，`glob` 是唯一额外依赖
+- `task` 工具是**唯一**不在 `BUILTIN_TOOLS` 数组里的内置工具——它需要每 Agent
+  实例化(注入当前 Agent 的 `SubAgentRegistry`),由 `registerBuiltinTools()` 单独构造。
 
 ## 测试
 

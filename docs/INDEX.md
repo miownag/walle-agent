@@ -64,7 +64,7 @@ const agent = await Agent.create({
       taskReview: { enabled: true, minToolCalls: 5 },
     }),
   ],
-  // 内置工具 (ls, read_file, write_file, edit_file, glob, grep, bash, plan, write_todos)
+  // 内置工具 (ls, read_file, write_file, edit_file, glob, grep, bash, plan, write_todos, task)
   // 默认全部启用，无需配置
 });
 

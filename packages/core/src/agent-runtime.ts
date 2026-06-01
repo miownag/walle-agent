@@ -22,6 +22,8 @@ import { PromptBuilder } from "./prompt-builder.js";
 import { AgentContextImpl } from "./agent-context.js";
 import { AgentStream, type AgentStreamEvent } from "./stream.js";
 import { BUILTIN_TOOLS } from "./builtin-tools/index.js";
+import { createTaskTool, TASK_TOOL_NAME } from "./builtin-tools/task-tool.js";
+import { SubAgentRegistry } from "./sub-agent-registry.js";
 import { mergeAbortSignals } from "./signal-utils.js";
 
 interface ActiveRun {
@@ -37,6 +39,12 @@ export class AgentRuntime {
   private eventBus: EventBus;
   private tokenBudget: TokenBudget;
   private promptBuilder: PromptBuilder;
+  /**
+   * Per-Agent registry of sub-agent types consumed by the built-in `task`
+   * tool. Pre-populated from `config.subAgents`; plugins (e.g. team's
+   * `SubAgentsPlugin`) can also register entries via `ctx.subAgents`.
+   */
+  private subAgentRegistry: SubAgentRegistry;
 
   /** The currently-running run, if any. Consulted by `interrupt()`. */
   private activeRun: ActiveRun | null = null;
@@ -52,6 +60,11 @@ export class AgentRuntime {
     this.tokenBudget = new TokenBudget(config.tokenBudget);
     this.promptBuilder = new PromptBuilder();
 
+    this.subAgentRegistry = new SubAgentRegistry();
+    for (const def of config.subAgents) {
+      this.subAgentRegistry.register(def);
+    }
+
     this.pluginContext = new AgentContextImpl({
       agent: this.agent,
       config: this.config,
@@ -59,6 +72,7 @@ export class AgentRuntime {
       toolRegistry: this.toolRegistry,
       hookManager: this.hookManager,
       middlewarePipeline: this.middlewarePipeline,
+      subAgents: this.subAgentRegistry,
     });
   }
 
@@ -81,10 +95,17 @@ export class AgentRuntime {
       this.middlewarePipeline.use(mw);
     }
 
-    // 5. Install plugins (sequential)
+    // 5. Install plugins (sequential).
+    //    Plugins MAY register sub-agent types via ctx.subAgents — those
+    //    additions need to be reflected in the task tool's description, so
+    //    the task tool itself is registered after this loop.
     for (const plugin of this.config.plugins) {
       await plugin.install(this.pluginContext);
     }
+
+    // 6. Register the per-agent `task` tool now that subAgentRegistry is
+    //    fully populated (config.subAgents + any plugin contributions).
+    this.registerTaskTool();
 
     await this.hookManager.emit("onInit", this.pluginContext);
   }
@@ -95,7 +116,7 @@ export class AgentRuntime {
     // Disabled entirely
     if (config === false) return;
 
-    let toolsToRegister = BUILTIN_TOOLS;
+    let toolsToRegister: Tool[] = BUILTIN_TOOLS;
 
     // Fine-grained include/exclude
     if (typeof config === "object") {
@@ -112,6 +133,52 @@ export class AgentRuntime {
       this.toolRegistry.register(tool);
     }
   }
+
+  /**
+   * Register the per-agent `task` tool. Called after plugins install so the
+   * tool description reflects every sub-agent type (config.subAgents +
+   * plugin-registered ones).
+   *
+   * Honors `useBuiltinTools` exclude/include rules for the "task" name and
+   * silently skips registration if the user already supplied a tool with
+   * that name (so they can override).
+   */
+  private registerTaskTool(): void {
+    const config = this.config.useBuiltinTools;
+    if (config === false) return;
+
+    if (typeof config === "object") {
+      if (config.includeTools && config.includeTools.length > 0) {
+        if (!config.includeTools.includes(TASK_TOOL_NAME)) return;
+      } else if (config.excludeTools && config.excludeTools.includes(TASK_TOOL_NAME)) {
+        return;
+      }
+    }
+
+    // Respect explicit user override: if a tool named "task" was passed via
+    // config.tools, leave it alone (matches the "user can override built-in"
+    // contract).
+    if (this.toolRegistry.has(TASK_TOOL_NAME)) return;
+
+    const taskTool = createTaskTool({
+      registry: this.subAgentRegistry,
+      defaultModel: this.config.model,
+      defaultMaxTurns: this.config.maxTurns,
+    });
+    this.toolRegistry.register(taskTool);
+  }
+
+  /**
+   * Expose the per-Agent SubAgentRegistry for plugins / advanced consumers.
+   * Plugins (e.g. team's `SubAgentsPlugin`) register types via
+   * `ctx.subAgents.register(...)` during install — the same registry already
+   * wired into the built-in `task` tool.
+   */
+  getSubAgentRegistry(): SubAgentRegistry {
+    return this.subAgentRegistry;
+  }
+  /** Reference TASK_TOOL_NAME so static typecheck flags accidental drift. */
+  static readonly TASK_TOOL_NAME = TASK_TOOL_NAME;
 
   /**
    * Non-streaming execution: internally calls stream, collects all events.

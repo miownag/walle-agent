@@ -40,6 +40,15 @@
 
 ## SubAgent（子 Agent）
 
+> SubAgent 在 Walle 里有两种形态,职责正交,可同时使用:
+>
+> | 形态 | 提供方 | 调度时机 | 工具数量 | 适合场景 |
+> |---|---|---|---|---|
+> | **静态包装(Static Wrapper)** | `@walle-agent/team` 的 `createSubAgentTool` | build-time | N 个 `delegate_<slug>` | 提前实例化好 N 个具体 Agent;Coordinator 知道每个的角色 |
+> | **动态调度(Dynamic Task)** | `@walle-agent/core` 内置 `task` 工具 + `SubAgentRegistry` | run-time | **1 个**通用 `task` | 用户预先注册「类型」,LLM 用 `subagent_type` 选;每次跑完即销毁 |
+>
+> 下文先讲创建方式与静态包装,然后单独一节讲动态调度(`Task` 工具)。
+
 ### 创建方式
 
 ```ts
@@ -461,3 +470,165 @@ const supervised = await createSupervisorTeam({
 
 const supResult = await supervised.run("解决 X", { strategy: "supervisor" });
 ```
+
+---
+
+## Dynamic SubAgent（`task` 工具）
+
+对齐 Claude Code 的 `Task` 工具语义:**主 Agent 通过一个内置的 `task` 工具
+动态派发任务给某个"sub-agent 类型"**;每次调用临时实例化一个 sub-agent,
+跑完即销毁,主 Agent 只看到最终总结。
+
+详细的 built-in 工具说明见 [`20-builtin-tools.md`](./20-builtin-tools.md#task)。
+本节聚焦 SubAgent 类型注册 + Registry/Plugin 入口。
+
+### SubAgentDefinition
+
+```ts
+export interface SubAgentDefinition {
+  /** 唯一 type 名,作为 task 工具的 subagent_type 入参 */
+  type: string;
+  /** 给主 Agent LLM 的描述,影响什么时候选这个 sub-agent */
+  description?: string;
+  systemPrompt?: string;
+  /** 默认继承父 Agent 的 model;显式给 def.model 可覆盖(例如换 cheaper model) */
+  model?: LLMProvider;
+  /** sub-agent 的 native tools(默认 []) */
+  tools?: Tool[];
+  /** 默认 false——不自动给 sub-agent built-in 工具(防 task 递归) */
+  useBuiltinTools?: boolean | BuiltinToolsConfig;
+  /** sub-agent 的 plugins(memory/skills/rag…均独立) */
+  plugins?: WallePlugin[];
+  /** 默认继承父 Agent 的 maxTurns */
+  maxTurns?: number;
+  /** 默认 false:只回 { result };true 则附带 messages + toolCalls */
+  verbose?: boolean;
+  /** 默认 false:sub-agent 用独立 sessionId,不污染父会话 memory */
+  inheritSession?: boolean;
+}
+```
+
+### SubAgentRegistry
+
+`@walle-agent/core` 暴露 `SubAgentRegistry` 类——纯 TS、无运行时依赖。每个
+`Agent` 实例内部各自持有一份 registry。
+
+```ts
+export class SubAgentRegistry {
+  register(def: SubAgentDefinition): void;     // 重复 type → throw
+  get(type: string): SubAgentDefinition | undefined;
+  has(type: string): boolean;
+  list(): SubAgentDefinition[];
+  types(): string[];
+}
+```
+
+### 三种入口
+
+#### 1) 糖语法:`AgentConfig.subAgents`
+
+最简方式,推荐默认用法:
+
+```ts
+const agent = await Agent.create({
+  name: "Walle",
+  model: openai,
+  subAgents: [
+    {
+      type: "researcher",
+      description: "Web research and summarization",
+      systemPrompt: "You are a research specialist…",
+      tools: [webSearchTool],
+    },
+    { type: "code-reviewer", systemPrompt: "Review code for bugs and style…" },
+  ],
+});
+```
+
+LLM 看到一个 `task` 工具,可这样调用:
+
+```jsonc
+{
+  "subagent_type": "researcher",
+  "description": "find LRU eviction tradeoffs",
+  "prompt": "比较 LRU vs LFU vs ARC 的命中率特征,给出 200 字结论"
+}
+```
+
+#### 2) Plugin 形态:`SubAgentsPlugin`(由 `@walle-agent/team` 提供)
+
+适合喜欢用 plugin 数组管理装配的用户:
+
+```ts
+import { SubAgentsPlugin } from "@walle-agent/team";
+
+const agent = await Agent.create({
+  name: "Walle",
+  model: openai,
+  plugins: [
+    new SubAgentsPlugin({
+      types: [
+        { type: "researcher", systemPrompt: "…", tools: [webSearchTool] },
+        { type: "coder", systemPrompt: "…" },
+      ],
+    }),
+  ],
+});
+```
+
+> **互斥**:同一 Agent 不能同时使用 `config.subAgents` 字段 + `SubAgentsPlugin`。
+> Plugin 在 install 时检测到冲突会抛错——避免重复注册同 type 的难调 bug。
+
+#### 3) 高级:`createTaskTool` factory
+
+完全接管装配流程,自己拿 registry 实例:
+
+```ts
+import { Agent, SubAgentRegistry, createTaskTool } from "@walle-agent/core";
+
+const registry = new SubAgentRegistry();
+registry.register({ type: "researcher", systemPrompt: "…" });
+
+const agent = await Agent.create({
+  model: openai,
+  tools: [createTaskTool({ registry, defaultModel: openai })],
+  useBuiltinTools: { excludeTools: ["task"] }, // 关掉默认那个
+});
+```
+
+### Sub-agent 生命周期
+
+每次 `task` 调用:
+
+1. `registry.get(subagent_type)` → `def`(unknown 时返回 `{error, available}`,**不抛**)
+2. `Agent.create({ ...def, model: def.model ?? defaultModel ?? parent.model })`
+3. `agent.run(prompt, { signal: parentSignal })`(父 abort → child 跟着停)
+4. `agent.dispose()`(`finally` 块,确保 plugin 资源释放)
+
+### 防递归默认
+
+Sub-agent 的 `useBuiltinTools` 默认 **`false`**——sub-agent 默认拿不到 `task`
+工具,无法再开 sub-sub-agent。需要嵌套时显式打开:
+
+```ts
+{
+  type: "research-coordinator",
+  systemPrompt: "…",
+  useBuiltinTools: { includeTools: ["task"] },
+  plugins: [new SubAgentsPlugin({ types: [/* sub-sub types */] })],
+}
+```
+
+### 与静态 `createSubAgentTool` 的区别
+
+| | 静态包装 | 动态 task |
+|---|---|---|
+| 实例化 | build-time(`Agent.create` 一次,长寿命) | run-time(每次调用都 create+dispose) |
+| 工具数 | N 个 `delegate_<slug>` | 1 个 `task` |
+| 主 Agent 看到的工具列表 | 每个 sub-agent 一行 | 一行,但 description 里枚举 types |
+| 资源占用 | sub-agent 常驻内存(包含其 plugins) | 每次跑临时 Agent,跑完释放 |
+| 适合场景 | 已有具体 Agent 实例,角色固定 | 类型化任务派发,实例数量随对话变化 |
+
+两套机制可并存:你完全可以一个 Agent 同时挂载 `createSubAgentTool` 包出的
+固定专家 + 通用 `task` 工具调度的临时 sub-agent。
+

@@ -12,6 +12,7 @@
     "mcp": "tsx mcp.ts",
     "rag": "tsx rag.ts",
     "trace": "tsx trace.ts",
+    "sub-agents": "tsx sub-agents.ts",
     "complete": "tsx walle-complete.ts"
   },
   "dependencies": {

@@ -40,7 +40,7 @@ const result = await agent.run("帮我总结一下部署 runbook", {
 | **可中断 + 续跑** | `agent.interrupt()` 协作式取消；被中断的 tool 输出会在 `Agent.resume(sessionId, ...)` 时完整重放。 |
 | **权限策略** | 一等公民：`mode`、`allowTools`、`denyTools`、`requireApprovalFor: { riskLevel, fileWrite, network, shell }`、异步 `approvalHandler`。 |
 | **沙箱执行** | `LocalSandbox`（execa）和 `DockerSandbox`，注册成 `shell` 工具，复用同一套风险标签。 |
-| **多 Agent** | `AgentTeam`（parallel / pipeline / debate / supervisor）、`Swarm` + `SwarmPolicy`、`Blackboard`、`createSubAgentTool`。 |
+| **多 Agent** | `AgentTeam`(parallel / pipeline / debate / supervisor)、`Swarm` + `SwarmPolicy`、`Blackboard`、`createSubAgentTool`,以及对齐 Claude Code 的内置 **`task` 工具**(动态调度子 Agent)。 |
 | **审计日志** | `TracePlugin` 写 JSONL 或内存；通过 `customStore` 注入即可对接 OTEL。 |
 | **Spec-Driven** | 每个包的设计沉淀在 [`docs/`](./docs/INDEX.md)，每个切片的实现备忘沉淀在 [`plans/`](./plans/)。 |
 
@@ -72,7 +72,7 @@ pnpm add @walle-agent/mcp @walle-agent/rag @walle-agent/trace @walle-agent/team
 | [`@walle-agent/evolution`](./packages/evolution) | Memory + Skill 提取引擎、文件落盘的提案队列、审批回调 | [15](./docs/15-self-evolution.md) |
 | [`@walle-agent/mcp`](./packages/mcp) | MCP 客户端管理、stdio + Streamable-HTTP 双 transport、工具白/黑名单 | [07](./docs/07-mcp.md) |
 | [`@walle-agent/sandbox`](./packages/sandbox) | `Sandbox` 接口、`LocalSandbox`（execa）、`DockerSandbox`、`shell` 工具注册 | [11](./docs/11-sandbox.md) |
-| [`@walle-agent/team`](./packages/team) | `AgentTeam`（parallel / pipeline / debate / supervisor）、`Swarm`、`Blackboard`、`createSubAgentTool`、`createSupervisorTeam` | [14](./docs/14-team-swarm.md) |
+| [`@walle-agent/team`](./packages/team) | `AgentTeam`（parallel / pipeline / debate / supervisor）、`Swarm`、`Blackboard`、`createSubAgentTool`、`createSupervisorTeam`、`SubAgentsPlugin` | [14](./docs/14-team-swarm.md) |
 | [`@walle-agent/rag`](./packages/rag) | `RAGPlugin` 接口 + `SimpleRAGPlugin`（文件 + 关键词检索），通过 `collect_context` 自动注入 | [10](./docs/10-rag.md) |
 | [`@walle-agent/trace`](./packages/trace) | `TracePlugin` + `JSONLTraceStore` + `InMemoryTraceStore`；redaction、采样、自定义 store 注入 | [16](./docs/16-trace.md) |
 
@@ -163,6 +163,35 @@ const team = await createSupervisorTeam({
 
 const out = await team.run("用户报告 checkout 失败", { strategy: "supervisor" });
 ```
+
+### 动态子 Agent（对齐 Claude Code 的 `task` 工具）
+
+预先注册子 Agent **类型**,父 Agent 通过内置的 `task` 工具动态调度。每次调用
+临时实例化一个子 Agent,跑完即销毁,父 Agent 只看到最终总结,看不到中间
+工具调用。
+
+```ts
+const agent = await Agent.create({
+  name: "Walle",
+  model,
+  subAgents: [
+    {
+      type: "researcher",
+      description: "Web research and concise summarization",
+      systemPrompt: "你是研究专家……",
+      tools: [webSearchTool],
+    },
+    { type: "code-reviewer", systemPrompt: "审查代码……" },
+  ],
+});
+
+// 父 LLM 只看到一个 `task` 工具,这样调用:
+//   { subagent_type: "researcher", description: "find X", prompt: "…" }
+```
+
+也可以走 `@walle-agent/team` 的 `SubAgentsPlugin` 插件形态,或直接用低层
+`createTaskTool({ registry, defaultModel })` factory——详见
+[`docs/14-team-swarm.md`](./docs/14-team-swarm.md#dynamic-subagenttask-工具)。
 
 把**所有**插件接到一个 Agent 上的端到端示例在
 [`examples/walle-complete.ts`](./examples/walle-complete.ts):
@@ -255,6 +284,7 @@ permissions）都通过 `WallePlugin.install()` 和强类型的 `EventBus` 接�
 | `pnpm mcp`      | 通过 stdio 接入 filesystem MCP server |
 | `pnpm rag`      | `SimpleRAGPlugin` + 自动注入 |
 | `pnpm trace`    | JSONL trace store + 回放 |
+| `pnpm sub-agents` | 通过内置 `task` 工具动态调度子 Agent |
 | `pnpm complete` | 把所有插件接到一个 Agent 上（见 [`examples/walle-complete.ts`](./examples/walle-complete.ts)）|
 
 每个示例读 `examples/.env`：
@@ -281,7 +311,7 @@ MODEL=gpt-4o-mini
 每个 Phase 的实现记录在 [`plans/`](./plans/) 目录；权威 roadmap 是
 [`docs/18-roadmap.md`](./docs/18-roadmap.md)。
 
-**MVP 已完成**：11 个包，41 个测试文件，当前分支上 321 个测试全部通过。
+**MVP 已完成**：11 个包，44 个测试文件，当前分支上 348 个测试全部通过。
 
 ---
 

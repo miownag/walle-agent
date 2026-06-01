@@ -16,6 +16,7 @@
     "mcp": "pnpm --filter walle-agent-examples run mcp",
     "rag": "pnpm --filter walle-agent-examples run rag",
     "trace": "pnpm --filter walle-agent-examples run trace",
+    "sub-agents": "pnpm --filter walle-agent-examples run sub-agents",
     "complete": "pnpm --filter walle-agent-examples run complete"
   },
   "keywords": [

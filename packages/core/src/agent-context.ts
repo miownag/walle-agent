@@ -10,6 +10,7 @@ import type { ToolRegistry } from "./tool-registry.js";
 import type { AgentHooks, HookManager } from "./hooks.js";
 import type { Middleware, MiddlewarePipeline } from "./middleware.js";
 import type { WallePlugin } from "./plugin.js";
+import type { SubAgentRegistry } from "./sub-agent-registry.js";
 
 // ─── AgentContext Interface ────────────────────────────────────────
 
@@ -17,6 +18,12 @@ export interface AgentContext {
   readonly agent: Agent;
   readonly config: ResolvedAgentConfig;
   readonly events: EventBus;
+  /**
+   * Per-Agent registry of sub-agent types. Plugins (e.g. team's
+   * `SubAgentsPlugin`) call `subAgents.register({ type, … })` during
+   * `install()` to expose types to the built-in `task` tool.
+   */
+  readonly subAgents: SubAgentRegistry;
 
   registerTool(tool: Tool): void;
   registerHook<K extends keyof AgentHooks>(name: K, handler: AgentHooks[K]): void;
@@ -33,12 +40,14 @@ export interface AgentContextImplOptions {
   toolRegistry: ToolRegistry;
   hookManager: HookManager;
   middlewarePipeline: MiddlewarePipeline;
+  subAgents: SubAgentRegistry;
 }
 
 export class AgentContextImpl implements AgentContext {
   readonly agent: Agent;
   readonly config: ResolvedAgentConfig;
   readonly events: EventBus;
+  readonly subAgents: SubAgentRegistry;
 
   private toolRegistry: ToolRegistry;
   private hookManager: HookManager;
@@ -51,6 +60,7 @@ export class AgentContextImpl implements AgentContext {
     this.toolRegistry = options.toolRegistry;
     this.hookManager = options.hookManager;
     this.middlewarePipeline = options.middlewarePipeline;
+    this.subAgents = options.subAgents;
   }
 
   registerTool(tool: Tool): void {

@@ -20,6 +20,9 @@ export type {
 export { createSupervisorTeam } from "./create-supervisor.js";
 export type { SupervisorTeamOptions } from "./create-supervisor.js";
 
+export { SubAgentsPlugin } from "./sub-agents-plugin.js";
+export type { SubAgentsPluginOptions } from "./sub-agents-plugin.js";
+
 export type {
   TeamMember,
   TeamConfig,

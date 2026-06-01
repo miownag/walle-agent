@@ -76,7 +76,7 @@ Run from the repo root unless noted.
 | `pnpm test:watch` | Watch-mode tests |
 | `pnpm lint` | ESLint over `packages/*/src/**/*.ts` |
 | `pnpm clean` | Remove all `dist/` outputs |
-| `pnpm basic` / `stream` / `memory` / `evolution` / `mcp` / `rag` / `trace` / `complete` | Run the matching example via `tsx` |
+| `pnpm basic` / `stream` / `memory` / `evolution` / `mcp` / `rag` / `trace` / `sub-agents` / `complete` | Run the matching example via `tsx` |
 
 Node `>= 20`, pnpm `10.29.x` (see `packageManager`).
 
@@ -137,3 +137,60 @@ for await (const event of agent.run("帮我总结这个文件", { stream: true, 
 ```
 
 See [`examples/`](./examples/) for runnable end-to-end variants.
+
+---
+
+## Sub-Agents (dynamic dispatch via the built-in `task` tool)
+
+Aligned with Claude Code: register sub-agent **types** up front, then let
+the parent LLM dispatch dynamically through one built-in `task` tool. Each
+call instantiates a fresh sub-agent, runs the prompt, and disposes it.
+
+Three equivalent entry points:
+
+```ts
+// 1) Sugar — AgentConfig.subAgents (recommended default)
+const agent = await Agent.create({
+  name: "Walle",
+  model,
+  subAgents: [
+    { type: "researcher", systemPrompt: "...", tools: [webSearchTool] },
+    { type: "code-reviewer", systemPrompt: "..." },
+  ],
+});
+
+// 2) Plugin — SubAgentsPlugin from @walle-agent/team
+import { SubAgentsPlugin } from "@walle-agent/team";
+const agent = await Agent.create({
+  model,
+  plugins: [new SubAgentsPlugin({ types: [/* SubAgentDefinition[] */] })],
+});
+
+// 3) Low-level — createTaskTool factory
+import { SubAgentRegistry, createTaskTool } from "@walle-agent/core";
+const registry = new SubAgentRegistry();
+registry.register({ type: "researcher", systemPrompt: "..." });
+const agent = await Agent.create({
+  model,
+  tools: [createTaskTool({ registry, defaultModel: model })],
+  useBuiltinTools: { excludeTools: ["task"] }, // disable the built-in
+});
+```
+
+Defaults that align with Claude Code:
+
+- The parent LLM sees **one** `task` tool with `{ subagent_type, description, prompt }`.
+- Sub-agent runs to completion in isolation; only its final content is returned (`{ result }`). Set `verbose: true` on the definition to also surface `messages` + `toolCalls`.
+- Sub-agent's `model` defaults to the parent's model; override per-type with `def.model`.
+- Sub-agent's `useBuiltinTools` defaults to `false` (prevents accidental `task` recursion).
+- `inheritSession: false` by default — sub-agent gets its own `sessionId` so memory plugins don't cross-contaminate.
+- Parent abort / signal propagates into the child run.
+- `config.subAgents` and `SubAgentsPlugin` are **mutually exclusive** — the plugin throws on install if both are used.
+
+Spec: [`docs/14-team-swarm.md`](./docs/14-team-swarm.md#dynamic-subagenttask-工具).
+Plan: [`plans/support-subagents/`](./plans/support-subagents/).
+
+The pre-existing `createSubAgentTool` (static wrapper, one `delegate_<slug>`
+tool per Agent instance) stays as the long-lived "specialists already
+instantiated" pattern; the new `task` tool is the dynamic-dispatch
+counterpart. Both can be combined on the same parent Agent.
