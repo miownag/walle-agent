@@ -11,6 +11,7 @@
  */
 
 import { config } from "dotenv";
+import { z } from "zod";
 import { Agent, defineTool } from "@walle-agent/core";
 import type { Tool } from "@walle-agent/core";
 import { OpenAIProvider } from "@walle-agent/openai";
@@ -33,16 +34,13 @@ function makeModel() {
 // default), they are all moved to shadow.
 function makeFakeMcpTools(): Tool[] {
   return Array.from({ length: 60 }, (_, i) =>
-    defineTool({
-      name: `mcp_fake_op_${i}`,
-      description: `Fake MCP operation #${i} — ${["read", "write", "list", "search", "transform"][i % 5]} something.`,
-      parameters: { type: "object", properties: { x: { type: "string" } } },
-      tags: ["mcp", "fake"],
-      riskLevel: "low",
-      async execute() {
-        return `ran mcp_fake_op_${i}`;
-      },
-    }),
+    defineTool(
+      `mcp_fake_op_${i}`,
+      `Fake MCP operation #${i} — ${["read", "write", "list", "search", "transform"][i % 5]} something.`,
+      { x: z.string().optional() },
+      async () => `ran mcp_fake_op_${i}`,
+      { tags: ["mcp", "fake"], riskLevel: "low" },
+    ),
   );
 }
 

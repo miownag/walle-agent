@@ -5,35 +5,30 @@
 import { promises as fs } from "fs";
 import { resolve, join } from "path";
 import { globSync } from "glob";
+import { z } from "zod";
 import { defineTool } from "../tool.js";
 
 /**
  * ls — List directory contents
  */
-export const lsTool = defineTool({
-  name: "ls",
-  description: "List files and directories in a specified path. Shows file names, types, and basic metadata.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: {
-        type: "string",
-        description: "The directory path to list. Defaults to current directory.",
-      },
-      recursive: {
-        type: "boolean",
-        description: "If true, recursively list all subdirectories and files.",
-      },
-      detailed: {
-        type: "boolean",
-        description: "If true, show detailed information including file sizes and timestamps.",
-      },
-    },
-    required: [],
+export const lsTool = defineTool(
+  "ls",
+  "List files and directories in a specified path. Shows file names, types, and basic metadata.",
+  {
+    path: z
+      .string()
+      .optional()
+      .describe("The directory path to list. Defaults to current directory."),
+    recursive: z
+      .boolean()
+      .optional()
+      .describe("If true, recursively list all subdirectories and files."),
+    detailed: z
+      .boolean()
+      .optional()
+      .describe("If true, show detailed information including file sizes and timestamps."),
   },
-  riskLevel: "low",
-  tags: ["builtin", "filesystem"],
-  async execute(input: { path?: string; recursive?: boolean; detailed?: boolean }) {
+  async (input) => {
     try {
       const dir = input.path ? resolve(input.path) : process.cwd();
       const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -41,9 +36,13 @@ export const lsTool = defineTool({
       const results = [];
       for (const entry of entries) {
         const name = entry.name;
-        const type = entry.isDirectory() ? "dir" : entry.isSymbolicLink() ? "link" : "file";
+        const type = entry.isDirectory()
+          ? "dir"
+          : entry.isSymbolicLink()
+            ? "link"
+            : "file";
 
-        let item: Record<string, unknown> = { name, type };
+        const item: Record<string, unknown> = { name, type };
 
         if (input.detailed) {
           try {
@@ -74,7 +73,11 @@ export const lsTool = defineTool({
           }
         };
         await processDir(dir);
-        return { path: dir, entries: results.length, recursiveEntries: recursiveResults };
+        return {
+          path: dir,
+          entries: results.length,
+          recursiveEntries: recursiveResults,
+        };
       }
 
       return { path: dir, entries: results };
@@ -82,35 +85,31 @@ export const lsTool = defineTool({
       return { error: String(error) };
     }
   },
-});
+  {
+    riskLevel: "low",
+    tags: ["builtin", "filesystem"],
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+);
 
 /**
  * read_file — Read file contents
  */
-export const readFileTool = defineTool({
-  name: "read_file",
-  description: "Read the contents of a file. Supports pagination for large files to prevent context overflow.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: {
-        type: "string",
-        description: "The file path to read.",
-      },
-      startLine: {
-        type: "number",
-        description: "Starting line number (1-indexed). Default is 1.",
-      },
-      endLine: {
-        type: "number",
-        description: "Ending line number (1-indexed). If omitted, reads to end of file.",
-      },
-    },
-    required: ["path"],
+export const readFileTool = defineTool(
+  "read_file",
+  "Read the contents of a file. Supports pagination for large files to prevent context overflow.",
+  {
+    path: z.string().describe("The file path to read."),
+    startLine: z
+      .number()
+      .optional()
+      .describe("Starting line number (1-indexed). Default is 1."),
+    endLine: z
+      .number()
+      .optional()
+      .describe("Ending line number (1-indexed). If omitted, reads to end of file."),
   },
-  riskLevel: "low",
-  tags: ["builtin", "filesystem"],
-  async execute(input: { path: string; startLine?: number; endLine?: number }) {
+  async (input) => {
     try {
       const filePath = resolve(input.path);
       const content = await fs.readFile(filePath, "utf-8");
@@ -132,77 +131,65 @@ export const readFileTool = defineTool({
       return { error: String(error) };
     }
   },
-});
+  {
+    riskLevel: "low",
+    tags: ["builtin", "filesystem"],
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+);
 
 /**
  * write_file — Write or overwrite a file
  */
-export const writeFileTool = defineTool({
-  name: "write_file",
-  description: "Write content to a file. Creates the file if it doesn't exist, or overwrites it if it does. Creates parent directories automatically.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: {
-        type: "string",
-        description: "The file path to write to.",
-      },
-      content: {
-        type: "string",
-        description: "The content to write to the file.",
-      },
-    },
-    required: ["path", "content"],
+export const writeFileTool = defineTool(
+  "write_file",
+  "Write content to a file. Creates the file if it doesn't exist, or overwrites it if it does. Creates parent directories automatically.",
+  {
+    path: z.string().describe("The file path to write to."),
+    content: z.string().describe("The content to write to the file."),
   },
-  riskLevel: "medium",
-  requiresApproval: true,
-  tags: ["builtin", "filesystem", "file-write"],
-  async execute(input: { path: string; content: string }) {
+  async (input) => {
     try {
       const filePath = resolve(input.path);
       // Ensure parent directory exists
       const dir = filePath.substring(0, filePath.lastIndexOf("/"));
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(filePath, input.content, "utf-8");
-      return { path: filePath, status: "success", bytesWritten: input.content.length };
+      return {
+        path: filePath,
+        status: "success",
+        bytesWritten: input.content.length,
+      };
     } catch (error) {
       return { error: String(error) };
     }
   },
-});
+  {
+    riskLevel: "medium",
+    requiresApproval: true,
+    tags: ["builtin", "filesystem", "file-write"],
+    annotations: { destructiveHint: true, openWorldHint: false },
+  },
+);
 
 /**
  * edit_file — Edit specific content in a file
  */
-export const editFileTool = defineTool({
-  name: "edit_file",
-  description: "Edit file contents by replacing exact string matches. Read the file first to get the exact content.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: {
-        type: "string",
-        description: "The file path to edit.",
-      },
-      search: {
-        type: "string",
-        description: "The exact text to search for and replace.",
-      },
-      replace: {
-        type: "string",
-        description: "The text to replace with.",
-      },
-      global: {
-        type: "boolean",
-        description: "If true, replace all occurrences. If false, replace only the first. Default is true.",
-      },
-    },
-    required: ["path", "search", "replace"],
+export const editFileTool = defineTool(
+  "edit_file",
+  "Edit file contents by replacing exact string matches. Read the file first to get the exact content.",
+  {
+    path: z.string().describe("The file path to edit."),
+    search: z.string().describe("The exact text to search for and replace."),
+    replace: z.string().describe("The text to replace with."),
+    global: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true, replace all occurrences. If false, replace only the first. Default is true.",
+      ),
   },
-  riskLevel: "medium",
-  requiresApproval: true,
-  tags: ["builtin", "filesystem", "file-write"],
-  async execute(input: { path: string; search: string; replace: string; global?: boolean }) {
+  async (input) => {
     try {
       const filePath = resolve(input.path);
       const content = await fs.readFile(filePath, "utf-8");
@@ -228,31 +215,30 @@ export const editFileTool = defineTool({
       return { error: String(error) };
     }
   },
-});
+  {
+    riskLevel: "medium",
+    requiresApproval: true,
+    tags: ["builtin", "filesystem", "file-write"],
+    annotations: { destructiveHint: true, openWorldHint: false },
+  },
+);
 
 /**
  * glob — Find files matching patterns
  */
-export const globTool = defineTool({
-  name: "glob",
-  description: "Find files matching a glob pattern. Uses standard glob syntax with * for any characters and ** for recursive matching.",
-  parameters: {
-    type: "object",
-    properties: {
-      pattern: {
-        type: "string",
-        description: "Glob pattern to match files. E.g., '*.ts', 'src/**/*.test.ts'",
-      },
-      cwd: {
-        type: "string",
-        description: "Working directory for the glob search. Defaults to current directory.",
-      },
-    },
-    required: ["pattern"],
+export const globTool = defineTool(
+  "glob",
+  "Find files matching a glob pattern. Uses standard glob syntax with * for any characters and ** for recursive matching.",
+  {
+    pattern: z
+      .string()
+      .describe("Glob pattern to match files. E.g., '*.ts', 'src/**/*.test.ts'"),
+    cwd: z
+      .string()
+      .optional()
+      .describe("Working directory for the glob search. Defaults to current directory."),
   },
-  riskLevel: "low",
-  tags: ["builtin", "filesystem"],
-  async execute(input: { pattern: string; cwd?: string }) {
+  async (input) => {
     try {
       const workDir = input.cwd ? resolve(input.cwd) : process.cwd();
       const files = globSync(input.pattern, { cwd: workDir });
@@ -267,39 +253,34 @@ export const globTool = defineTool({
       return { error: String(error) };
     }
   },
-});
+  {
+    riskLevel: "low",
+    tags: ["builtin", "filesystem"],
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+);
 
 /**
  * grep — Search for text patterns in files
  */
-export const grepTool = defineTool({
-  name: "grep",
-  description: "Search for text patterns in files. Can search a single file or multiple files matching a glob pattern.",
-  parameters: {
-    type: "object",
-    properties: {
-      pattern: {
-        type: "string",
-        description: "Text or regex pattern to search for.",
-      },
-      file: {
-        type: "string",
-        description: "Single file path or glob pattern to search in.",
-      },
-      ignoreCase: {
-        type: "boolean",
-        description: "If true, search is case-insensitive.",
-      },
-      regex: {
-        type: "boolean",
-        description: "If true, treat pattern as regular expression. Default is false (literal string).",
-      },
-    },
-    required: ["pattern", "file"],
+export const grepTool = defineTool(
+  "grep",
+  "Search for text patterns in files. Can search a single file or multiple files matching a glob pattern.",
+  {
+    pattern: z.string().describe("Text or regex pattern to search for."),
+    file: z.string().describe("Single file path or glob pattern to search in."),
+    ignoreCase: z
+      .boolean()
+      .optional()
+      .describe("If true, search is case-insensitive."),
+    regex: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true, treat pattern as regular expression. Default is false (literal string).",
+      ),
   },
-  riskLevel: "low",
-  tags: ["builtin", "filesystem"],
-  async execute(input: { pattern: string; file: string; ignoreCase?: boolean; regex?: boolean }) {
+  async (input) => {
     try {
       const files = globSync(input.file);
 
@@ -307,7 +288,10 @@ export const grepTool = defineTool({
         return { error: `No files matched pattern: ${input.file}` };
       }
 
-      const results: Array<{ file: string; lines: Array<{ lineNumber: number; content: string }> }> = [];
+      const results: Array<{
+        file: string;
+        lines: Array<{ lineNumber: number; content: string }>;
+      }> = [];
 
       for (const filePath of files) {
         try {
@@ -318,7 +302,10 @@ export const grepTool = defineTool({
           const flags = input.ignoreCase ? "i" : "";
           const searchRegex = input.regex
             ? new RegExp(input.pattern, flags)
-            : new RegExp(input.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+            : new RegExp(
+                input.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+                flags,
+              );
 
           const matches = [];
           for (let i = 0; i < fileLines.length; i++) {
@@ -345,4 +332,9 @@ export const grepTool = defineTool({
       return { error: String(error) };
     }
   },
-});
+  {
+    riskLevel: "low",
+    tags: ["builtin", "filesystem"],
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+);

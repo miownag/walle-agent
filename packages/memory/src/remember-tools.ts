@@ -3,6 +3,7 @@
  * so the LLM can read/write long-term memory.
  */
 
+import { z } from "zod";
 import { defineTool, type Tool } from "@walle-agent/core";
 import type { MemoryManager } from "./memory-manager.js";
 import type { MemoryType } from "./memory-types.js";
@@ -18,42 +19,29 @@ const MEMORY_TYPES: MemoryType[] = [
 ];
 
 export function buildRememberTools(manager: MemoryManager): Tool[] {
-  const rememberTool = defineTool({
-    name: "remember",
-    description:
-      "Persist a fact, preference, or decision into long-term memory. Use when the user explicitly says 'remember X', or when you learn durable information (user preferences, project conventions, stable facts). Do NOT use for transient requests.",
-    parameters: {
-      type: "object",
-      properties: {
-        content: {
-          type: "string",
-          description: "The knowledge to remember. One self-contained sentence or short paragraph.",
-        },
-        type: {
-          type: "string",
-          enum: MEMORY_TYPES,
-          description: "Kind of memory. Default is 'fact'.",
-        },
-        tags: {
-          type: "array",
-          items: { type: "string" },
-          description: "Optional tags for retrieval.",
-        },
-        importance: {
-          type: "number",
-          description: "0..1; defaults to 0.5.",
-        },
-      },
-      required: ["content"],
+  const rememberTool = defineTool(
+    "remember",
+    "Persist a fact, preference, or decision into long-term memory. Use when the user explicitly says 'remember X', or when you learn durable information (user preferences, project conventions, stable facts). Do NOT use for transient requests.",
+    {
+      content: z
+        .string()
+        .describe(
+          "The knowledge to remember. One self-contained sentence or short paragraph.",
+        ),
+      type: z
+        .enum(MEMORY_TYPES as [MemoryType, ...MemoryType[]])
+        .optional()
+        .describe("Kind of memory. Default is 'fact'."),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe("Optional tags for retrieval."),
+      importance: z
+        .number()
+        .optional()
+        .describe("0..1; defaults to 0.5."),
     },
-    riskLevel: "low",
-    tags: ["builtin", "memory"],
-    async execute(input: {
-      content: string;
-      type?: MemoryType;
-      tags?: string[];
-      importance?: number;
-    }) {
+    async (input) => {
       const item = await manager.remember({
         content: input.content,
         type: input.type,
@@ -62,30 +50,27 @@ export function buildRememberTools(manager: MemoryManager): Tool[] {
       });
       return { id: item.id, status: "ok", content: item.content };
     },
-  });
-
-  const recallTool = defineTool({
-    name: "recall",
-    description:
-      "Search long-term memory by keyword. Returns the top matches. Prefer this over asking the user for details they may have already told you.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description: "Free-text query.",
-        },
-        topK: {
-          type: "number",
-          description: "Max number of items to return. Default 5.",
-        },
-      },
-      required: ["query"],
+    {
+      riskLevel: "low",
+      tags: ["builtin", "memory"],
+      annotations: { openWorldHint: false },
     },
-    riskLevel: "low",
-    tags: ["builtin", "memory"],
-    async execute(input: { query: string; topK?: number }) {
-      const items = await manager.retrieve(input.query, { longTopK: input.topK ?? 5 });
+  );
+
+  const recallTool = defineTool(
+    "recall",
+    "Search long-term memory by keyword. Returns the top matches. Prefer this over asking the user for details they may have already told you.",
+    {
+      query: z.string().describe("Free-text query."),
+      topK: z
+        .number()
+        .optional()
+        .describe("Max number of items to return. Default 5."),
+    },
+    async (input) => {
+      const items = await manager.retrieve(input.query, {
+        longTopK: input.topK ?? 5,
+      });
       return {
         count: items.length,
         items: items.map((i) => ({
@@ -97,26 +82,30 @@ export function buildRememberTools(manager: MemoryManager): Tool[] {
         })),
       };
     },
-  });
-
-  const forgetTool = defineTool({
-    name: "forget",
-    description: "Delete a memory item by id. Use when the user says to forget / delete / remove something.",
-    parameters: {
-      type: "object",
-      properties: {
-        id: { type: "string", description: "Memory id returned by remember/recall." },
-      },
-      required: ["id"],
+    {
+      riskLevel: "low",
+      tags: ["builtin", "memory"],
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    riskLevel: "medium",
-    requiresApproval: true,
-    tags: ["builtin", "memory"],
-    async execute(input: { id: string }) {
+  );
+
+  const forgetTool = defineTool(
+    "forget",
+    "Delete a memory item by id. Use when the user says to forget / delete / remove something.",
+    {
+      id: z.string().describe("Memory id returned by remember/recall."),
+    },
+    async (input) => {
       const ok = await manager.forget(input.id);
       return { deleted: ok, id: input.id };
     },
-  });
+    {
+      riskLevel: "medium",
+      requiresApproval: true,
+      tags: ["builtin", "memory"],
+      annotations: { destructiveHint: true, openWorldHint: false },
+    },
+  );
 
   return [rememberTool, recallTool, forgetTool];
 }

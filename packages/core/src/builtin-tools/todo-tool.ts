@@ -2,44 +2,42 @@
  * Built-in todo/task management tool: write_todos
  */
 
+import { z } from "zod";
 import { defineTool } from "../tool.js";
 
 // ─── In-memory Store ──────────────────────────────────────────────
 
-const todoStore = new Map<string, Array<{ id: string; task: string; completed: boolean; createdAt: string }>>();
+const todoStore = new Map<
+  string,
+  Array<{ id: string; task: string; completed: boolean; createdAt: string }>
+>();
 
 /**
  * write_todos — Manage task lists for planning complex objectives
  */
-export const writeTodosTool = defineTool({
-  name: "write_todos",
-  description: "Create, update, list, and complete tasks in a todo list. Useful for tracking progress on complex objectives.",
-  parameters: {
-    type: "object",
-    properties: {
-      action: {
-        type: "string",
-        enum: ["add", "list", "complete", "remove", "clear"],
-        description: "Action to perform: 'add' new task, 'list' all tasks, 'complete' a task, 'remove' a task, 'clear' all tasks.",
-      },
-      task: {
-        type: "string",
-        description: "Task description. Required for 'add' action.",
-      },
-      taskId: {
-        type: "string",
-        description: "Task ID. Required for 'complete' and 'remove' actions.",
-      },
-      listName: {
-        type: "string",
-        description: "Name of the todo list. Defaults to 'default'.",
-      },
-    },
-    required: ["action"],
+export const writeTodosTool = defineTool(
+  "write_todos",
+  "Create, update, list, and complete tasks in a todo list. Useful for tracking progress on complex objectives.",
+  {
+    action: z
+      .enum(["add", "list", "complete", "remove", "clear"])
+      .describe(
+        "Action to perform: 'add' new task, 'list' all tasks, 'complete' a task, 'remove' a task, 'clear' all tasks.",
+      ),
+    task: z
+      .string()
+      .optional()
+      .describe("Task description. Required for 'add' action."),
+    taskId: z
+      .string()
+      .optional()
+      .describe("Task ID. Required for 'complete' and 'remove' actions."),
+    listName: z
+      .string()
+      .optional()
+      .describe("Name of the todo list. Defaults to 'default'."),
   },
-  riskLevel: "low",
-  tags: ["builtin", "task-management"],
-  async execute(input: { action: string; task?: string; taskId?: string; listName?: string }) {
+  async (input) => {
     try {
       const listName = input.listName || "default";
 
@@ -138,7 +136,12 @@ export const writeTodosTool = defineTool({
       return { error: String(error) };
     }
   },
-});
+  {
+    riskLevel: "low",
+    tags: ["builtin", "task-management"],
+    annotations: { openWorldHint: false },
+  },
+);
 
 export function getTodoStore() {
   return todoStore;

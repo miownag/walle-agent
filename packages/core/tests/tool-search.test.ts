@@ -22,17 +22,16 @@ function mkTool(
   tags: string[] = [],
   exec?: (input: unknown) => unknown,
 ): Tool {
-  return defineTool({
+  return defineTool(
     name,
     description,
-    parameters: { type: "object", properties: {} },
-    tags,
-    riskLevel: "low",
-    async execute(input) {
+    {},
+    async (input) => {
       if (exec) return exec(input);
       return `ran ${name}`;
     },
-  });
+    { tags, riskLevel: "low" },
+  );
 }
 
 function mkCtx(events?: EventBus): ToolExecutionContext {

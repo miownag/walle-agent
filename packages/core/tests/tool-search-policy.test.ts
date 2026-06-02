@@ -9,16 +9,13 @@ import type { Tool } from "../src/tool.js";
 import { MockProvider } from "./mock-provider.js";
 
 function mkTool(name: string, tags: string[] = []): Tool {
-  return defineTool({
+  return defineTool(
     name,
-    description: `tool ${name}`,
-    parameters: { type: "object", properties: {} },
-    tags,
-    riskLevel: "low",
-    async execute() {
-      return `ran ${name}`;
-    },
-  });
+    `tool ${name}`,
+    {},
+    async () => `ran ${name}`,
+    { tags, riskLevel: "low" },
+  );
 }
 
 function many(n: number, tags: string[] = []): Tool[] {

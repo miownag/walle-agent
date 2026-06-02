@@ -74,29 +74,29 @@ const subAgent = await Agent.create({
 注意工具名会自动 slugify（见上文实现备忘 #2）。
 
 ```ts
+import { z } from "zod";
+import { defineTool } from "@walle-agent/core";
+
 export function createSubAgentTool(agent: Agent, options?: {
   name?: string;
   description?: string;
   maxTokens?: number;
 }): Tool<{ task: string }, { result: string }> {
-  return defineTool({
-    name: options?.name ?? `delegate_${slugifyToolName(agent.name)}`,
-    description: options?.description ?? `Delegate a task to ${agent.name}.`,
-    parameters: {
-      type: "object",
-      properties: {
-        task: { type: "string", description: "Task description for the sub-agent" },
-      },
-      required: ["task"],
+  return defineTool(
+    options?.name ?? `delegate_${slugifyToolName(agent.name)}`,
+    options?.description ?? `Delegate a task to ${agent.name}.`,
+    {
+      task: z.string().describe("Task description for the sub-agent"),
     },
-    riskLevel: "low",
-    tags: ["sub-agent"],
-
-    async execute(input) {
-      const result = await agent.run(input.task);
+    async ({ task }) => {
+      const result = await agent.run(task);
       return { result: result.content };
     },
-  });
+    {
+      riskLevel: "low",
+      tags: ["sub-agent"],
+    },
+  );
 }
 ```
 

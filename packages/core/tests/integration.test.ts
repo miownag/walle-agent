@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { z } from "zod";
 import { Agent } from "../src/agent.js";
 import { defineTool } from "../src/tool.js";
 import type { AgentStreamEvent } from "../src/stream.js";
@@ -71,19 +72,15 @@ describe("Agent Integration", () => {
       { content: "The answer is 4." },
     ]);
 
-    const calculator = defineTool({
-      name: "calculator",
-      description: "Calculate math expressions",
-      parameters: {
-        type: "object",
-        properties: { expression: { type: "string" } },
-        required: ["expression"],
-      },
-      async execute(input: { expression: string }) {
+    const calculator = defineTool(
+      "calculator",
+      "Calculate math expressions",
+      { expression: z.string() },
+      async (input) => {
         // Simple eval for test
         return { result: eval(input.expression) };
       },
-    });
+    );
 
     const agent = await Agent.create({
       name: "test-agent",
@@ -202,12 +199,12 @@ describe("Agent Integration", () => {
       }),
     );
 
-    const calculator = defineTool({
-      name: "calculator",
-      description: "Calculate",
-      parameters: { type: "object", properties: { expression: { type: "string" } } },
-      async execute() { return { result: 1 }; },
-    });
+    const calculator = defineTool(
+      "calculator",
+      "Calculate",
+      { expression: z.string() },
+      async () => ({ result: 1 }),
+    );
 
     const agent = await Agent.create({
       name: "test-agent",
@@ -232,13 +229,13 @@ describe("Agent Integration", () => {
       { content: "Tool was denied" },
     ]);
 
-    const dangerous = defineTool({
-      name: "dangerous_tool",
-      description: "Dangerous",
-      parameters: { type: "object", properties: {} },
-      riskLevel: "high",
-      async execute() { return { done: true }; },
-    });
+    const dangerous = defineTool(
+      "dangerous_tool",
+      "Dangerous",
+      {},
+      async () => ({ done: true }),
+      { riskLevel: "high" },
+    );
 
     const agent = await Agent.create({
       name: "test-agent",

@@ -6,6 +6,7 @@
  * runtime stats about visible / hidden tool counts.
  */
 
+import { z } from "zod";
 import { defineTool } from "../tool.js";
 import type { Tool } from "../tool.js";
 import type { ToolRegistry } from "../tool-registry.js";
@@ -162,41 +163,35 @@ export function createToolSearchTool(
   opts: CreateToolSearchOptions,
 ): Tool<ToolSearchInput, ToolSearchOutput | ToolSearchErrorOutput> {
   const { registry } = opts;
-  return defineTool<ToolSearchInput, ToolSearchOutput | ToolSearchErrorOutput>({
-    name: TOOL_SEARCH_NAME,
-    description: buildToolSearchDescription(registry),
-    parameters: {
-      type: "object",
-      properties: {
-        keywords: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Keywords to search by. OR semantics — a tool matching ANY keyword scores. " +
+  return defineTool(
+    TOOL_SEARCH_NAME,
+    buildToolSearchDescription(registry),
+    {
+      keywords: z
+        .array(z.string())
+        .describe(
+          "Keywords to search by. OR semantics — a tool matching ANY keyword scores. " +
             'Each entry is plain text (case-insensitive substring) or "/regex/flags".',
-        },
-        servers: {
-          type: "array",
-          items: { type: "string" },
-          description: 'Restrict to specific server names (e.g. "filesystem", "builtin").',
-        },
-        tags: {
-          type: "array",
-          items: { type: "string" },
-          description: "Restrict to tools with at least one of these tags.",
-        },
-        limit: {
-          type: "number",
-          description: "Maximum number of results. Default 20, max 50.",
-        },
-      },
-      required: ["keywords"],
+        ),
+      servers: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Restrict to specific server names (e.g. "filesystem", "builtin").',
+        ),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe("Restrict to tools with at least one of these tags."),
+      limit: z
+        .number()
+        .optional()
+        .describe("Maximum number of results. Default 20, max 50."),
     },
-    riskLevel: "low",
-    tags: ["builtin"],
-
-    async execute(input, ctx) {
-      const keywords = Array.isArray(input?.keywords) ? input.keywords.filter(Boolean) : [];
+    async (input, ctx): Promise<ToolSearchOutput | ToolSearchErrorOutput> => {
+      const keywords = Array.isArray(input?.keywords)
+        ? input.keywords.filter(Boolean)
+        : [];
       if (keywords.length === 0) {
         return { matches: [], totalCandidates: 0, truncated: false };
       }
@@ -209,8 +204,12 @@ export function createToolSearchTool(
         };
       }
 
-      const wantedServers = input.servers && input.servers.length > 0 ? new Set(input.servers) : null;
-      const wantedTags = input.tags && input.tags.length > 0 ? new Set(input.tags) : null;
+      const wantedServers =
+        input.servers && input.servers.length > 0
+          ? new Set(input.servers)
+          : null;
+      const wantedTags =
+        input.tags && input.tags.length > 0 ? new Set(input.tags) : null;
 
       const candidates = registry.list().filter((t) => {
         if (t.name === TOOL_SEARCH_NAME || t.name === DEFER_EXECUTE_NAME) return false;
@@ -255,5 +254,10 @@ export function createToolSearchTool(
 
       return out;
     },
-  });
+    {
+      riskLevel: "low",
+      tags: ["builtin"],
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+  );
 }

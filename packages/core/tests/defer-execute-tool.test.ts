@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { z } from "zod";
 import { createDeferExecuteTool } from "../src/builtin-tools/defer-execute-tool.js";
 import { ToolRegistry } from "../src/tool-registry.js";
 import { defineTool } from "../src/tool.js";
@@ -16,17 +17,16 @@ function mkTool(
   tags: string[] = [],
   exec?: (input: unknown) => unknown,
 ): Tool {
-  return defineTool({
+  return defineTool(
     name,
     description,
-    parameters: { type: "object", properties: {} },
-    tags,
-    riskLevel: "low",
-    async execute(input) {
+    {},
+    async (input) => {
       if (exec) return exec(input);
       return `ran ${name}`;
     },
-  });
+    { tags, riskLevel: "low" },
+  );
 }
 
 function mkCtx(events?: EventBus): ToolExecutionContext {
@@ -42,7 +42,14 @@ function mkCtx(events?: EventBus): ToolExecutionContext {
 describe("createDeferExecuteTool", () => {
   it("executes a registered (shadow) tool", async () => {
     const r = new ToolRegistry();
-    const target = mkTool("hidden", "...", ["mcp"], (input: unknown) => `out:${JSON.stringify(input)}`);
+    // Use a real schema so the args flow through zod.parse() untouched.
+    const target = defineTool(
+      "hidden",
+      "...",
+      { x: z.number() },
+      async (input) => `out:${JSON.stringify(input)}`,
+      { tags: ["mcp"], riskLevel: "low" },
+    );
     r.register(target, { shadow: true });
     const tool = createDeferExecuteTool({
       registry: r,

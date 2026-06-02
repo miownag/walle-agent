@@ -16,6 +16,7 @@
  *   - docs/20-builtin-tools.md#task
  */
 
+import { z } from "zod";
 import { defineTool } from "../tool.js";
 import type { Tool } from "../tool.js";
 import type { LLMProvider } from "../llm-provider.js";
@@ -116,31 +117,17 @@ export function createTaskTool(opts: CreateTaskToolOptions): Tool<TaskToolInput,
     ].join("\n");
   };
 
-  return defineTool<TaskToolInput, TaskToolOutput>({
-    name: opts.name ?? TASK_TOOL_NAME,
-    description: buildDescription(),
-    parameters: {
-      type: "object",
-      properties: {
-        subagent_type: {
-          type: "string",
-          description: typeEnumDescription(),
-        },
-        description: {
-          type: "string",
-          description: "Short (3-5 word) summary of the sub-task. Surfaced to the user / UI.",
-        },
-        prompt: {
-          type: "string",
-          description: "The actual task prompt sent to the sub-agent.",
-        },
-      },
-      required: ["subagent_type", "description", "prompt"],
+  return defineTool(
+    opts.name ?? TASK_TOOL_NAME,
+    buildDescription(),
+    {
+      subagent_type: z.string().describe(typeEnumDescription()),
+      description: z
+        .string()
+        .describe("Short (3-5 word) summary of the sub-task. Surfaced to the user / UI."),
+      prompt: z.string().describe("The actual task prompt sent to the sub-agent."),
     },
-    riskLevel: "low",
-    tags: ["builtin", "sub-agent"],
-
-    async execute(input, ctx): Promise<TaskToolOutput> {
+    async (input, ctx): Promise<TaskToolOutput> => {
       // Validate input shape defensively — LLM tool calls are best-effort.
       if (!input || typeof input.subagent_type !== "string") {
         return { error: "task: missing required field 'subagent_type'" };
@@ -202,5 +189,10 @@ export function createTaskTool(opts: CreateTaskToolOptions): Tool<TaskToolInput,
         }
       }
     },
-  });
+    {
+      riskLevel: "low",
+      tags: ["builtin", "sub-agent"],
+      annotations: { openWorldHint: false },
+    },
+  );
 }

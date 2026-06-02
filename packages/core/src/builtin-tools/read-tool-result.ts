@@ -12,6 +12,7 @@
  * lives in `@walle-agent/memory`.
  */
 
+import { z } from "zod";
 import { defineTool } from "../tool.js";
 import type { Tool } from "../tool.js";
 import type { EventBus } from "../events.js";
@@ -41,37 +42,30 @@ interface AgentWithEventBus {
 export const readToolResultTool: Tool<
   ReadToolResultInput,
   ReadToolResultOutput | ReadToolResultErrorOutput
-> = defineTool<ReadToolResultInput, ReadToolResultOutput | ReadToolResultErrorOutput>({
-  name: READ_TOOL_RESULT_NAME,
-  description:
-    "Read the full content of an evicted tool result by its toolCallId. " +
+> = defineTool(
+  READ_TOOL_RESULT_NAME,
+  "Read the full content of an evicted tool result by its toolCallId. " +
     "When older tool outputs in your conversation are replaced by " +
     "[ToolResult #N evicted | toolCallId=...] placeholders, use this tool " +
     "to load the original content. Supports offset/limit for paginating " +
     "very large outputs (line-based).",
-  parameters: {
-    type: "object",
-    properties: {
-      toolCallId: {
-        type: "string",
-        description: "The toolCallId from the placeholder header.",
-      },
-      offset: {
-        type: "number",
-        description: "0-based line offset into the stored content. Default 0.",
-      },
-      limit: {
-        type: "number",
-        description: "Maximum number of lines to return. Default 200.",
-      },
-    },
-    required: ["toolCallId"],
+  {
+    toolCallId: z.string().describe("The toolCallId from the placeholder header."),
+    offset: z
+      .number()
+      .optional()
+      .describe("0-based line offset into the stored content. Default 0."),
+    limit: z
+      .number()
+      .optional()
+      .describe("Maximum number of lines to return. Default 200."),
   },
-  riskLevel: "low",
-  tags: ["builtin"],
-
-  async execute(input, ctx) {
-    if (!input || typeof input.toolCallId !== "string" || input.toolCallId.length === 0) {
+  async (input, ctx) => {
+    if (
+      !input ||
+      typeof input.toolCallId !== "string" ||
+      input.toolCallId.length === 0
+    ) {
       return { error: "read_tool_result: 'toolCallId' is required" };
     }
     const events = (ctx.agent as unknown as AgentWithEventBus).getEventBus?.();
@@ -96,4 +90,9 @@ export const readToolResultTool: Tool<
     }
     return result.value;
   },
-});
+  {
+    riskLevel: "low",
+    tags: ["builtin"],
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+);

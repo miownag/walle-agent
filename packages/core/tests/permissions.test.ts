@@ -13,50 +13,48 @@ const makeCall = (name: string, args: Record<string, unknown> = {}): ModelToolCa
   arguments: args,
 });
 
-const lowTool = defineTool({
-  name: "noop",
-  description: "no-op",
-  parameters: { type: "object", properties: {} },
-  riskLevel: "low",
-  async execute() {
-    return { ok: true };
-  },
-});
+const lowTool = defineTool(
+  "noop",
+  "no-op",
+  {},
+  async () => ({ ok: true }),
+  { riskLevel: "low" },
+);
 
-const mediumTool = defineTool({
-  name: "save_file",
-  description: "save file",
-  parameters: { type: "object", properties: {} },
-  riskLevel: "medium",
-  requiresApproval: true,
-  tags: ["filesystem", "file-write"],
-  async execute() {
-    return { ok: true };
+const mediumTool = defineTool(
+  "save_file",
+  "save file",
+  {},
+  async () => ({ ok: true }),
+  {
+    riskLevel: "medium",
+    requiresApproval: true,
+    tags: ["filesystem", "file-write"],
   },
-});
+);
 
-const highTool = defineTool({
-  name: "bash",
-  description: "shell",
-  parameters: { type: "object", properties: {} },
-  riskLevel: "high",
-  requiresApproval: true,
-  tags: ["shell"],
-  async execute() {
-    return { ok: true };
+const highTool = defineTool(
+  "bash",
+  "shell",
+  {},
+  async () => ({ ok: true }),
+  {
+    riskLevel: "high",
+    requiresApproval: true,
+    tags: ["shell"],
   },
-});
+);
 
-const networkTool = defineTool({
-  name: "fetch",
-  description: "http",
-  parameters: { type: "object", properties: {} },
-  riskLevel: "medium",
-  tags: ["network"],
-  async execute() {
-    return { ok: true };
+const networkTool = defineTool(
+  "fetch",
+  "http",
+  {},
+  async () => ({ ok: true }),
+  {
+    riskLevel: "medium",
+    tags: ["network"],
   },
-});
+);
 
 describe("checkToolPermission", () => {
   describe("denyTools / allowTools", () => {

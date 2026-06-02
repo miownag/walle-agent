@@ -19,7 +19,8 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
-    "@walle-agent/core": "workspace:*"
+    "@walle-agent/core": "workspace:*",
+    "zod": "^3.25.0 || ^4.0.0"
   },
   "dependencies": {
     "execa": "^9.5.0"
@@ -27,7 +28,8 @@
   "devDependencies": {
     "@walle-agent/core": "workspace:*",
     "typescript": "^5.7.0",
-    "tsup": "^8.3.0"
+    "tsup": "^8.3.0",
+    "zod": "^4.0.0"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -91,22 +91,25 @@ plugin interfaces from this repo.
 ### A minimal agent with one tool
 
 ```ts
+import { z } from "zod";
 import { Agent, defineTool } from "@walle-agent/core";
 import { OpenAIProvider } from "@walle-agent/openai";
 
-const calculator = defineTool({
-  name: "calculator",
-  description: "Evaluate a math expression.",
-  parameters: {
-    type: "object",
-    properties: { expression: { type: "string" } },
-    required: ["expression"],
+// `defineTool` matches Claude Agent SDK's MCP-style `tool()` signature:
+// (name, description, zodShape, handler, extras?). The Zod raw shape becomes
+// JSON Schema automatically; the handler receives parsed, strongly-typed args.
+const calculator = defineTool(
+  "calculator",
+  "Evaluate a math expression.",
+  { expression: z.string().describe("Math expression to evaluate") },
+  async ({ expression }) => ({
+    result: Function(`"use strict"; return (${expression})`)(),
+  }),
+  {
+    riskLevel: "low",
+    annotations: { readOnlyHint: true, openWorldHint: false },
   },
-  riskLevel: "low",
-  async execute({ expression }: { expression: string }) {
-    return { result: Function(`"use strict"; return (${expression})`)() };
-  },
-});
+);
 
 const agent = await Agent.create({
   name: "BasicAgent",

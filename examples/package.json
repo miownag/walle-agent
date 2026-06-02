@@ -28,7 +28,8 @@
     "@walle-agent/rag": "workspace:*",
     "@walle-agent/trace": "workspace:*",
     "@walle-agent/sandbox": "workspace:*",
-    "@walle-agent/team": "workspace:*"
+    "@walle-agent/team": "workspace:*",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

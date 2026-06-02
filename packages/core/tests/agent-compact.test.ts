@@ -4,7 +4,6 @@
 
 import { describe, it, expect } from "vitest";
 import { Agent } from "../src/agent.js";
-import { defineTool } from "../src/tool.js";
 import type { LLMProvider, LLMChatRequest, LLMStreamChunk, ModelMessage } from "../src/index.js";
 
 class ScriptedProvider implements LLMProvider {

@@ -6,6 +6,7 @@
  */
 
 import { config } from "dotenv";
+import { z } from "zod";
 import { Agent, defineTool } from "@walle-agent/core";
 import { OpenAIProvider } from "@walle-agent/openai";
 import { resolve, dirname } from "path";
@@ -14,25 +15,24 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, "..", ".env") });
 
-const webSearch = defineTool({
-  name: "web_search",
-  description: "Search the web for recent information.",
-  parameters: {
-    type: "object",
-    properties: {
-      query: { type: "string", description: "Search query" },
-    },
-    required: ["query"],
+const webSearch = defineTool(
+  "web_search",
+  "Search the web for recent information.",
+  {
+    query: z.string().describe("Search query"),
   },
-  async execute(input: { query: string }) {
+  async ({ query }) => {
     // Mock search result for demo
     return {
       results: [
-        { title: "Example Result", snippet: `Mock result for: ${input.query}` },
+        { title: "Example Result", snippet: `Mock result for: ${query}` },
       ],
     };
   },
-});
+  {
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+);
 
 async function main() {
   const agent = await Agent.create({

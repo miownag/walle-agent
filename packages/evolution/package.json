@@ -31,7 +31,8 @@
     "@walle-agent/memory": "workspace:*",
     "@walle-agent/skills": "workspace:*",
     "typescript": "^5.7.0",
-    "tsup": "^8.3.0"
+    "tsup": "^8.3.0",
+    "zod": "^4.0.0"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -296,6 +296,8 @@ describe("createTaskTool", () => {
     const parent = await Agent.create({ name: "Parent", model: parentProvider });
     const tool = createTaskTool({ registry, defaultModel: parentProvider });
 
+    // `prompt: ""` is a valid string for zod, so the handler's defensive
+    // check fires and returns a structured error.
     const noPrompt = await callTask(
       tool,
       { subagent_type: "x", description: "y", prompt: "" },
@@ -303,12 +305,17 @@ describe("createTaskTool", () => {
     );
     expect("error" in noPrompt).toBe(true);
 
-    const noType = await callTask(
-      tool,
-      { subagent_type: undefined, description: "y", prompt: "z" },
-      { agent: parent },
-    );
-    expect("error" in noType).toBe(true);
+    // Missing required `subagent_type` is rejected at the zod-parse stage with
+    // a thrown ZodError. The agent runtime catches this and surfaces it as a
+    // tool-call error, so it does not crash the parent agent. Here we just
+    // verify the throw happens — runtime integration is covered elsewhere.
+    await expect(
+      callTask(
+        tool,
+        { subagent_type: undefined, description: "y", prompt: "z" },
+        { agent: parent },
+      ),
+    ).rejects.toThrow();
 
     await parent.dispose();
   });
@@ -426,14 +433,12 @@ describe("AgentRuntime.registerTaskTool integration", () => {
   it("user-supplied `task` tool wins over the built-in", async () => {
     const provider = new MockProvider([{ content: "x" }]);
 
-    const customTask = defineTool({
-      name: "task",
-      description: "custom override",
-      parameters: { type: "object" },
-      async execute() {
-        return { custom: true };
-      },
-    });
+    const customTask = defineTool(
+      "task",
+      "custom override",
+      {},
+      async () => ({ custom: true }),
+    );
 
     const agent = await Agent.create({
       name: "OverrideTask",

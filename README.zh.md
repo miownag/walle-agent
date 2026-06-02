@@ -88,22 +88,25 @@ pnpm add @walle-agent/mcp @walle-agent/rag @walle-agent/trace @walle-agent/team
 ### 一个最小化、带工具的 Agent
 
 ```ts
+import { z } from "zod";
 import { Agent, defineTool } from "@walle-agent/core";
 import { OpenAIProvider } from "@walle-agent/openai";
 
-const calculator = defineTool({
-  name: "calculator",
-  description: "执行一个数学表达式。",
-  parameters: {
-    type: "object",
-    properties: { expression: { type: "string" } },
-    required: ["expression"],
+// `defineTool` 对齐 Claude Agent SDK 的 MCP 风格 `tool()` 签名:
+// (name, description, zodShape, handler, extras?)。Zod raw shape 会自动派生
+// 成 JSON Schema, handler 拿到的是 parse 后强类型的 args。
+const calculator = defineTool(
+  "calculator",
+  "执行一个数学表达式。",
+  { expression: z.string().describe("待求值的数学表达式") },
+  async ({ expression }) => ({
+    result: Function(`"use strict"; return (${expression})`)(),
+  }),
+  {
+    riskLevel: "low",
+    annotations: { readOnlyHint: true, openWorldHint: false },
   },
-  riskLevel: "low",
-  async execute({ expression }: { expression: string }) {
-    return { result: Function(`"use strict"; return (${expression})`)() };
-  },
-});
+);
 
 const agent = await Agent.create({
   name: "BasicAgent",

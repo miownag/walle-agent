@@ -142,54 +142,81 @@ const webSearchTool: Tool<{ query: string }, { results: SearchResult[] }> = {
 };
 ```
 
-### 方式二：工厂函数（推荐，更好的类型推断）
+### 方式二:工厂函数 `defineTool`(推荐,Claude Agent SDK / MCP 风格)
 
-```ts
-export function defineTool<TInput, TOutput>(
-  config: Tool<TInput, TOutput>,
-): Tool<TInput, TOutput> {
-  return config;
-}
-
-const calculator = defineTool({
-  name: "calculator",
-  description: "Evaluate a mathematical expression.",
-  parameters: {
-    type: "object",
-    properties: {
-      expression: { type: "string", description: "Math expression to evaluate" },
-    },
-    required: ["expression"],
-  },
-  riskLevel: "low",
-
-  async execute(input) {
-    // 安全的数学表达式求值
-    return { result: evaluate(input.expression) };
-  },
-});
-```
-
-### 方式三：从 Zod schema 生成
+`defineTool` 对齐 [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/typescript#createsdkmcpserver) 的 `tool()` 签名:
 
 ```ts
 import { z } from "zod";
-import { zodToTool } from "@walle-agent/core/zod"; // 可选集成
+import type {
+  Tool,
+  ToolAnnotations,
+  DefineToolExtras,
+  ToolExecutionContext,
+  ZodRawShape,
+} from "@walle-agent/core";
 
-const fileReadTool = zodToTool({
-  name: "read_file",
-  description: "Read a file from the filesystem.",
-  schema: z.object({
+export function defineTool<Shape extends z.ZodRawShape, TOutput>(
+  name: string,
+  description: string,
+  inputSchema: Shape,
+  handler: (
+    args: z.infer<z.ZodObject<Shape>>,
+    context: ToolExecutionContext,
+  ) => Promise<TOutput>,
+  extras?: DefineToolExtras,
+): Tool<z.infer<z.ZodObject<Shape>>, TOutput>;
+```
+
+- `inputSchema` 是 Zod **raw shape**(`{ field: z.string() }` 而不是 `z.object({...})`),
+  库内部用 `z.object(shape)` 包装并派生 JSON Schema。
+- `handler` 第一参 `args` 是 zod **parse 后**的强类型对象(自动校验)。
+- `extras` 同时承载 MCP 风格的 `annotations`(`readOnlyHint` / `destructiveHint`
+  / `idempotentHint` / `openWorldHint` / `title`)和 Walle 自有的
+  `riskLevel` / `requiresApproval` / `tags`。
+
+```ts
+import { z } from "zod";
+import { defineTool } from "@walle-agent/core";
+
+const calculator = defineTool(
+  "calculator",
+  "Evaluate a mathematical expression.",
+  {
+    expression: z.string().describe("Math expression to evaluate"),
+  },
+  async ({ expression }) => {
+    return { result: evaluate(expression) };
+  },
+  {
+    riskLevel: "low",
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+);
+```
+
+### 方式三:让 Zod 描述更复杂的 schema
+
+`defineTool` 已经原生接受 zod。复杂场景直接用 zod 的 `.optional()` /
+`.default()` / `z.enum()` / `z.array()` / 嵌套 `z.object()` 等:
+
+```ts
+import { z } from "zod";
+import { defineTool } from "@walle-agent/core";
+
+const fileReadTool = defineTool(
+  "read_file",
+  "Read a file from the filesystem.",
+  {
     path: z.string().describe("File path to read"),
     encoding: z.enum(["utf-8", "base64"]).default("utf-8"),
-  }),
-  riskLevel: "medium",
-
-  async execute(input) {
-    const content = await fs.readFile(input.path, input.encoding);
+  },
+  async ({ path, encoding }) => {
+    const content = await fs.readFile(path, encoding);
     return { content };
   },
-});
+  { riskLevel: "medium" },
+);
 ```
 
 ---

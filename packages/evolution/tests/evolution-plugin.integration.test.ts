@@ -210,14 +210,12 @@ describe("EvolutionPlugin — integration", () => {
     );
 
     const { defineTool } = await import("@walle-agent/core");
-    const tTool = defineTool({
-      name: "t",
-      description: "no-op",
-      parameters: { type: "object", properties: {} },
-      async execute() {
-        return "ok";
-      },
-    });
+    const tTool = defineTool(
+      "t",
+      "no-op",
+      {},
+      async () => "ok",
+    );
 
     const memoryPlugin = new MemoryPlugin({ rootDir: root });
     const skillsPlugin = new SkillsPlugin({ project: path.join(root, "agents-project"), user: path.join(root, "agents-user") });

@@ -99,7 +99,7 @@ Node `>= 20`, pnpm `10.29.x` (see `packageManager`).
 - ✅ Update the matching `docs/NN-*.md` if behavior changed
 - ✅ Update / create a `plans/<task>/` folder for non-trivial work
 - ✅ Add or update tests under `packages/<pkg>/tests/`
-- ✅ Keep `core` dependency-free
+- ✅ Keep `core` runtime deps tiny — `glob` is the only direct dep; `zod` is a peer dep (`^3.25 || ^4`)
 - ✅ Run `pnpm build && pnpm test` before declaring done
 
 ---
@@ -137,6 +137,35 @@ for await (const event of agent.run("帮我总结这个文件", { stream: true, 
 ```
 
 See [`examples/`](./examples/) for runnable end-to-end variants.
+
+---
+
+## Defining tools (Claude Agent SDK MCP-style)
+
+`defineTool` follows the Claude Agent SDK's MCP-style `tool()` signature:
+positional `(name, description, zodShape, handler, extras?)`. The Zod raw
+shape is converted to JSON Schema internally; the handler receives parsed,
+strongly-typed args.
+
+```ts
+import { z } from "zod";
+import { defineTool } from "@walle-agent/core";
+
+const search = defineTool(
+  "search",
+  "Search the web",
+  { query: z.string().describe("Search query") },
+  async ({ query }) => ({ results: [`hit for ${query}`] }),
+  {
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    riskLevel: "low",
+  },
+);
+```
+
+`extras` supports both MCP-standard `annotations` (`title`, `readOnlyHint`,
+`destructiveHint`, `idempotentHint`, `openWorldHint`) and Walle-specific
+`riskLevel` / `requiresApproval` / `tags`. Spec: [`docs/06-tools.md`](./docs/06-tools.md).
 
 ---
 

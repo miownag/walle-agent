@@ -7,6 +7,7 @@
  * server-side. We slugify the agent name. Pass `options.name` to override.
  */
 
+import { z } from "zod";
 import type { Agent, Tool } from "@walle-agent/core";
 import { defineTool } from "@walle-agent/core";
 
@@ -48,26 +49,22 @@ export function createSubAgentTool(
   const slug = slugifyToolName(agent.name);
   const name = options.name ?? `delegate_${slug}`;
   const description =
-    options.description ?? `Delegate a task to ${agent.name}. Returns the sub-agent's final answer.`;
+    options.description ??
+    `Delegate a task to ${agent.name}. Returns the sub-agent's final answer.`;
 
-  return defineTool<SubAgentToolInput, SubAgentToolOutput>({
+  return defineTool(
     name,
     description,
-    parameters: {
-      type: "object",
-      properties: {
-        task: {
-          type: "string",
-          description: "Task description for the sub-agent",
-        },
-      },
-      required: ["task"],
+    {
+      task: z.string().describe("Task description for the sub-agent"),
     },
-    riskLevel: "low",
-    tags: ["sub-agent"],
-    async execute(input) {
+    async (input) => {
       const result = await agent.run(input.task);
       return { result: result.content };
     },
-  });
+    {
+      riskLevel: "low",
+      tags: ["sub-agent"],
+    },
+  );
 }

@@ -120,30 +120,28 @@ describe("Agent.resume", () => {
 
   it("interrupt → resume rehydrates the cancelled run's evicted tool result to full", async () => {
     const huge = "z".repeat(3000);
-    const bigTool = defineTool({
-      name: "get_log",
-      description: "Fetch a log",
-      parameters: { type: "object", properties: {} },
-      async execute() {
-        return huge;
-      },
-    });
+    const bigTool = defineTool(
+      "get_log",
+      "Fetch a log",
+      {},
+      async () => huge,
+    );
 
     // Run 1 interrupted: the tool returns, we interrupt before the follow-up model call.
     const plugin1 = new MemoryPlugin({
       rootDir: root,
       largeToolResults: { thresholdChars: 1000 },
     });
-    const cancelFromTool = defineTool({
-      name: "get_log",
-      description: "Fetch a log and cancel",
-      parameters: { type: "object", properties: {} },
-      async execute(_input, ctx) {
+    const cancelFromTool = defineTool(
+      "get_log",
+      "Fetch a log and cancel",
+      {},
+      async (_input, ctx) => {
         // ctx.agent is the agent running this tool call — use it to self-interrupt.
         (ctx.agent as Agent).interrupt("self-interrupt-for-test");
         return huge;
       },
-    });
+    );
     const mp1 = new MockProvider([
       { toolCalls: [{ id: "tc-big", name: "get_log", arguments: {} }] },
       { content: "should-not-emit" },

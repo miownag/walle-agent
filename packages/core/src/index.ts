@@ -51,8 +51,14 @@ export type {
 } from "./llm-provider.js";
 
 // Tools
-export type { Tool, ToolCallRecord, ToolExecutionContext } from "./tool.js";
-export { defineTool } from "./tool.js";
+export type {
+  Tool,
+  ToolCallRecord,
+  ToolExecutionContext,
+  ToolAnnotations,
+  DefineToolExtras,
+} from "./tool.js";
+export { defineTool, zodShapeToJsonSchema } from "./tool.js";
 
 // Tool Registry
 export { ToolRegistry } from "./tool-registry.js";

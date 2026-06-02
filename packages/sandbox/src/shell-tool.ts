@@ -10,6 +10,7 @@
  * automatically.
  */
 
+import { z } from "zod";
 import { defineTool, type Tool } from "@walle-agent/core";
 import type { Sandbox, SandboxResult } from "./sandbox-types.js";
 
@@ -20,32 +21,27 @@ export interface ShellToolInput {
 }
 
 export function buildShellTool(sandbox: Sandbox): Tool<ShellToolInput, SandboxResult> {
-  return defineTool<ShellToolInput, SandboxResult>({
-    name: "shell",
-    description:
-      "Execute a shell command in a sandboxed environment. Use for system-level operations that need isolation. Returns stdout/stderr/exitCode/durationMs (and timedOut if the command was killed for exceeding the timeout).",
-    parameters: {
-      type: "object",
-      properties: {
-        command: {
-          type: "string",
-          description: "Shell command line; runs under `sh -c`, so quoting/pipes/redirects work as usual.",
-        },
-        cwd: {
-          type: "string",
-          description: "Working directory. Falls back to the sandbox's default cwd.",
-        },
-        timeoutMs: {
-          type: "number",
-          description: "Per-call timeout override. Falls back to the sandbox's default (30s for local, 60s for docker).",
-        },
-      },
-      required: ["command"],
+  return defineTool(
+    "shell",
+    "Execute a shell command in a sandboxed environment. Use for system-level operations that need isolation. Returns stdout/stderr/exitCode/durationMs (and timedOut if the command was killed for exceeding the timeout).",
+    {
+      command: z
+        .string()
+        .describe(
+          "Shell command line; runs under `sh -c`, so quoting/pipes/redirects work as usual.",
+        ),
+      cwd: z
+        .string()
+        .optional()
+        .describe("Working directory. Falls back to the sandbox's default cwd."),
+      timeoutMs: z
+        .number()
+        .optional()
+        .describe(
+          "Per-call timeout override. Falls back to the sandbox's default (30s for local, 60s for docker).",
+        ),
     },
-    riskLevel: "high",
-    requiresApproval: true,
-    tags: ["builtin", "shell"],
-    async execute(input) {
+    async (input) => {
       return sandbox.run({
         cmd: "sh",
         args: ["-c", input.command],
@@ -53,5 +49,16 @@ export function buildShellTool(sandbox: Sandbox): Tool<ShellToolInput, SandboxRe
         timeoutMs: input.timeoutMs,
       });
     },
-  });
+    {
+      riskLevel: "high",
+      requiresApproval: true,
+      tags: ["builtin", "shell"],
+      annotations: {
+        title: "Run sandboxed shell command",
+        readOnlyHint: false,
+        destructiveHint: true,
+        openWorldHint: true,
+      },
+    },
+  );
 }

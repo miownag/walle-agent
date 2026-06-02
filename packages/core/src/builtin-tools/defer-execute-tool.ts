@@ -7,6 +7,7 @@
  * policy as if the LLM had invoked it directly.
  */
 
+import { z } from "zod";
 import { defineTool } from "../tool.js";
 import type { Tool, ToolExecutionContext } from "../tool.js";
 import type { ToolRegistry } from "../tool-registry.js";
@@ -53,31 +54,29 @@ export function createDeferExecuteTool(
   opts: CreateDeferExecuteOptions,
 ): Tool<DeferExecuteInput, DeferExecuteOutput | DeferExecuteErrorOutput> {
   const { registry, checkPermission } = opts;
-  return defineTool<DeferExecuteInput, DeferExecuteOutput | DeferExecuteErrorOutput>({
-    name: DEFER_EXECUTE_NAME,
-    description:
-      "Execute a tool that is currently hidden from your tool list. " +
+  return defineTool(
+    DEFER_EXECUTE_NAME,
+    "Execute a tool that is currently hidden from your tool list. " +
       "First call tool_search to find the tool, then call this with its " +
       "qualifiedName and arguments. The tool's permission policy still applies.",
-    parameters: {
-      type: "object",
-      properties: {
-        qualifiedName: {
-          type: "string",
-          description: "qualifiedName from tool_search.matches[i].qualifiedName.",
-        },
-        arguments: {
-          type: "object",
-          description: "Arguments forwarded to the underlying tool.",
-        },
-      },
-      required: ["qualifiedName", "arguments"],
+    {
+      qualifiedName: z
+        .string()
+        .describe("qualifiedName from tool_search.matches[i].qualifiedName."),
+      arguments: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Arguments forwarded to the underlying tool."),
     },
-    riskLevel: "low",
-    tags: ["builtin"],
-
-    async execute(input, ctx: ToolExecutionContext) {
-      if (!input || typeof input.qualifiedName !== "string" || !input.qualifiedName) {
+    async (
+      input,
+      ctx: ToolExecutionContext,
+    ): Promise<DeferExecuteOutput | DeferExecuteErrorOutput> => {
+      if (
+        !input ||
+        typeof input.qualifiedName !== "string" ||
+        !input.qualifiedName
+      ) {
         return { error: "defer_execute_tool: 'qualifiedName' is required" };
       }
       if (
@@ -107,7 +106,9 @@ export function createDeferExecuteTool(
       try {
         decision = await checkPermission(tool, synthCall);
       } catch (err) {
-        return { error: `permission check threw: ${err instanceof Error ? err.message : String(err)}` };
+        return {
+          error: `permission check threw: ${err instanceof Error ? err.message : String(err)}`,
+        };
       }
       if (!decision.allowed) {
         const events = (ctx.agent as unknown as AgentWithEventBus).getEventBus?.();
@@ -145,5 +146,9 @@ export function createDeferExecuteTool(
         return { error: err instanceof Error ? err.message : String(err) };
       }
     },
-  });
+    {
+      riskLevel: "low",
+      tags: ["builtin"],
+    },
+  );
 }

@@ -114,14 +114,12 @@ describe("MemoryPlugin integration", () => {
 
   it("B — oversized tool result is evicted; next run sees a summary", async () => {
     const huge = "x".repeat(5000);
-    const bigTool = defineTool({
-      name: "get_log",
-      description: "Fetch a log",
-      parameters: { type: "object", properties: {} },
-      async execute() {
-        return huge;
-      },
-    });
+    const bigTool = defineTool(
+      "get_log",
+      "Fetch a log",
+      {},
+      async () => huge,
+    );
 
     const mp1 = new MockProvider([
       { toolCalls: [{ id: "tc-1", name: "get_log", arguments: {} }] },
@@ -183,14 +181,12 @@ describe("MemoryPlugin integration", () => {
 
   it("C — cancel-and-resume: the cancelled run's tool result is rehydrated to full", async () => {
     const huge = "y".repeat(4000);
-    const bigTool = defineTool({
-      name: "get_log",
-      description: "Fetch a log",
-      parameters: { type: "object", properties: {} },
-      async execute() {
-        return huge;
-      },
-    });
+    const bigTool = defineTool(
+      "get_log",
+      "Fetch a log",
+      {},
+      async () => huge,
+    );
 
     // Run #1 completes (for baseline comparison)
     const plugin1 = new MemoryPlugin({
@@ -219,15 +215,15 @@ describe("MemoryPlugin integration", () => {
     // Use a tool whose execution triggers abort, so the generator sees it
     // between tool-call-end and the next model-call-start check.
     const controller = new AbortController();
-    const cancellingTool = defineTool({
-      name: "get_log",
-      description: "Fetch a log (also cancels)",
-      parameters: { type: "object", properties: {} },
-      async execute() {
+    const cancellingTool = defineTool(
+      "get_log",
+      "Fetch a log (also cancels)",
+      {},
+      async () => {
         controller.abort();
         return huge;
       },
-    });
+    );
     const mpB = new MockProvider([
       { toolCalls: [{ id: "tc-B", name: "get_log", arguments: {} }] },
       { content: "should-never-emit" },

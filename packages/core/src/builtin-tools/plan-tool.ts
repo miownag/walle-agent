@@ -5,6 +5,7 @@
  * Each plan has a title and ordered steps with status tracking.
  */
 
+import { z } from "zod";
 import { defineTool } from "../tool.js";
 
 // ─── Types ────────────────────────────────────────────────────────
@@ -28,7 +29,11 @@ export interface Plan {
 
 const planStore = new Map<string, Plan>();
 
-// ─── Input Types ──────────────────────────────────────────────────
+// ─── Schema ───────────────────────────────────────────────────────
+
+const stepStatusEnum = z.enum(["pending", "in_progress", "completed", "skipped"]);
+
+// ─── Input Type (re-exported for downstream callers) ─────────────
 
 export interface PlanToolInput {
   action: "create" | "update" | "get" | "list" | "delete" | "update_step";
@@ -42,63 +47,46 @@ export interface PlanToolInput {
 
 // ─── Tool Definition ──────────────────────────────────────────────
 
-export const planTool = defineTool({
-  name: "plan",
-  description:
-    "Create and manage structured execution plans. Use for breaking down complex objectives into ordered steps with status tracking. Actions: create, update, get, list, delete, update_step.",
-  parameters: {
-    type: "object",
-    properties: {
-      action: {
-        type: "string",
-        enum: ["create", "update", "get", "list", "delete", "update_step"],
-        description:
-          "Action to perform. 'create': new plan, 'update': modify plan title/steps, 'get': retrieve a plan, 'list': list all plans, 'delete': remove a plan, 'update_step': update a single step's status/content.",
-      },
-      planId: {
-        type: "string",
-        description: "Plan ID. Required for get, update, delete, update_step.",
-      },
-      title: {
-        type: "string",
-        description: "Plan title. Required for create, optional for update.",
-      },
-      steps: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            content: { type: "string", description: "Step description" },
-            status: {
-              type: "string",
-              enum: ["pending", "in_progress", "completed", "skipped"],
-              description: "Step status. Defaults to 'pending'.",
-            },
-          },
-          required: ["content"],
-        },
-        description: "Plan steps. Required for create, optional for update (replaces all steps).",
-      },
-      stepId: {
-        type: "string",
-        description: "Step ID. Required for update_step.",
-      },
-      stepStatus: {
-        type: "string",
-        enum: ["pending", "in_progress", "completed", "skipped"],
-        description: "New status for a step. Used with update_step.",
-      },
-      stepContent: {
-        type: "string",
-        description: "New content for a step. Used with update_step.",
-      },
-    },
-    required: ["action"],
+export const planTool = defineTool(
+  "plan",
+  "Create and manage structured execution plans. Use for breaking down complex objectives into ordered steps with status tracking. Actions: create, update, get, list, delete, update_step.",
+  {
+    action: z
+      .enum(["create", "update", "get", "list", "delete", "update_step"])
+      .describe(
+        "Action to perform. 'create': new plan, 'update': modify plan title/steps, 'get': retrieve a plan, 'list': list all plans, 'delete': remove a plan, 'update_step': update a single step's status/content.",
+      ),
+    planId: z
+      .string()
+      .optional()
+      .describe("Plan ID. Required for get, update, delete, update_step."),
+    title: z
+      .string()
+      .optional()
+      .describe("Plan title. Required for create, optional for update."),
+    steps: z
+      .array(
+        z.object({
+          content: z.string().describe("Step description"),
+          status: stepStatusEnum
+            .optional()
+            .describe("Step status. Defaults to 'pending'."),
+        }),
+      )
+      .optional()
+      .describe(
+        "Plan steps. Required for create, optional for update (replaces all steps).",
+      ),
+    stepId: z.string().optional().describe("Step ID. Required for update_step."),
+    stepStatus: stepStatusEnum
+      .optional()
+      .describe("New status for a step. Used with update_step."),
+    stepContent: z
+      .string()
+      .optional()
+      .describe("New content for a step. Used with update_step."),
   },
-  riskLevel: "low",
-  tags: ["builtin", "planning"],
-
-  async execute(input: PlanToolInput) {
+  async (input) => {
     try {
       switch (input.action) {
         case "create":
@@ -114,13 +102,18 @@ export const planTool = defineTool({
         case "update_step":
           return updateStep(input);
         default:
-          return { error: `Unknown action: ${input.action}` };
+          return { error: `Unknown action: ${input.action as string}` };
       }
     } catch (error) {
       return { error: String(error) };
     }
   },
-});
+  {
+    riskLevel: "low",
+    tags: ["builtin", "planning"],
+    annotations: { openWorldHint: false },
+  },
+);
 
 // ─── Action Handlers ──────────────────────────────────────────────
 
@@ -180,7 +173,10 @@ function updatePlan(input: PlanToolInput) {
   }
 
   // Auto-update plan status
-  if (plan.steps.length > 0 && plan.steps.every((s) => s.status === "completed" || s.status === "skipped")) {
+  if (
+    plan.steps.length > 0 &&
+    plan.steps.every((s) => s.status === "completed" || s.status === "skipped")
+  ) {
     plan.status = "completed";
   } else {
     plan.status = "active";
@@ -258,7 +254,9 @@ function updateStep(input: PlanToolInput) {
 
   const step = plan.steps.find((s) => s.id === input.stepId);
   if (!step) {
-    return { error: `Step not found: ${input.stepId} in plan ${input.planId}` };
+    return {
+      error: `Step not found: ${input.stepId} in plan ${input.planId}`,
+    };
   }
 
   if (input.stepStatus) {
@@ -269,7 +267,9 @@ function updateStep(input: PlanToolInput) {
   }
 
   // Auto-update plan status
-  if (plan.steps.every((s) => s.status === "completed" || s.status === "skipped")) {
+  if (
+    plan.steps.every((s) => s.status === "completed" || s.status === "skipped")
+  ) {
     plan.status = "completed";
   } else {
     plan.status = "active";
