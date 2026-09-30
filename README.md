@@ -7,6 +7,8 @@ A TypeScript Agent SDK with a **micro-core + plugin architecture** and a built-i
 sandboxed shell commands, retrieve from a knowledge base, orchestrate teams, and
 keep an audit trail — all from one composable runtime.
 
+![Walle desktop app](./docs/assets/walle-desktop.png)
+
 ```ts
 import { Agent } from "@walle-agent/core";
 import { OpenAIProvider } from "@walle-agent/openai";

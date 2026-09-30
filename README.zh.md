@@ -6,6 +6,8 @@
 用同一套可组合的运行时，构建会记忆、能演进技能、可在沙箱里执行 shell、
 能从知识库检索、可编排多 Agent 协作、并且全程留下审计日志的智能体。
 
+![Walle 桌面应用](./docs/assets/walle-desktop.png)
+
 ```ts
 import { Agent } from "@walle-agent/core";
 import { OpenAIProvider } from "@walle-agent/openai";
