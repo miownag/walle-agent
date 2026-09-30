@@ -218,6 +218,31 @@ describe("createTaskTool", () => {
     await parent.dispose();
   });
 
+  it("passes the parent workspace boundary to dynamically-created child Agents", async () => {
+    const parentProvider = new MockProvider([{ content: "parent" }]);
+    const childProvider = new MockProvider([{ content: "child" }]);
+    const registry = new SubAgentRegistry();
+    registry.register({ type: "coder", model: childProvider, useBuiltinTools: false });
+    const workspaceRoot = "/tmp/walle-parent-workspace";
+    const createSpy = vi.spyOn(Agent, "create");
+    const parent = await Agent.create({ name: "Parent", model: parentProvider });
+    const tool = createTaskTool({
+      registry,
+      defaultModel: parentProvider,
+      workspaceRoot,
+    });
+
+    await callTask(
+      tool,
+      { subagent_type: "coder", description: "code", prompt: "go" },
+      { agent: parent },
+    );
+
+    expect(createSpy.mock.calls.at(-1)?.[0].workspaceRoot).toBe(workspaceRoot);
+    createSpy.mockRestore();
+    await parent.dispose();
+  });
+
   it("propagates ctx.signal to child.run", async () => {
     const parentProvider = new MockProvider([{ content: "parent" }]);
     const childProvider = new MockProvider([{ content: "child" }]);

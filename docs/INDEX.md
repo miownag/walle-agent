@@ -42,6 +42,7 @@
 | 20 | [Built-in Tools](./20-builtin-tools.md) | 内置工具（core 自动注册）：文件系统、Shell、Plan、Task Management |
 | 21 | [Context Compression](./21-context-compression.md) | Micro（按 turn 逐出 tool result）+ Macro（对话摘要）双层压缩 |
 | 22 | [Tool Search](./22-tool-search.md) | ToolRegistry shadow + `tool_search` / `defer_execute_tool` 内置工具 |
+| 23 | [Desktop App](./23-desktop-app.md) | Local-only Electron Coding Agent 应用、会话/工作区/IPC/交互规格 |
 
 ---
 

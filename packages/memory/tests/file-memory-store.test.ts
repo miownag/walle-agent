@@ -64,13 +64,19 @@ describe("FileMemoryStore", () => {
   it("search ranks by keyword overlap and honours scope/type filters", async () => {
     const store = new FileMemoryStore(file);
     await store.init();
-    await store.put(makeItem({ content: "user prefers pnpm", type: "preference" }));
-    await store.put(makeItem({ content: "project uses typescript", type: "fact" }));
+    await store.put(
+      makeItem({ content: "user prefers pnpm", type: "preference" }),
+    );
+    await store.put(
+      makeItem({ content: "project uses typescript", type: "fact" }),
+    );
     await store.put(makeItem({ content: "favourite colour is blue" }));
 
     const res = await store.search({ text: "pnpm typescript", topK: 10 });
     expect(res.length).toBeGreaterThanOrEqual(2);
-    expect(["user prefers pnpm", "project uses typescript"]).toContain(res[0].content);
+    expect(["user prefers pnpm", "project uses typescript"]).toContain(
+      res[0].content,
+    );
 
     const prefOnly = await store.search({
       text: "pnpm typescript",
@@ -84,8 +90,12 @@ describe("FileMemoryStore", () => {
   it("empty query returns items by recency", async () => {
     const store = new FileMemoryStore(file);
     await store.init();
-    await store.put(makeItem({ content: "first", createdAt: "2026-01-01T00:00:00.000Z" }));
-    await store.put(makeItem({ content: "second", createdAt: "2026-05-01T00:00:00.000Z" }));
+    await store.put(
+      makeItem({ content: "first", createdAt: "2026-01-01T00:00:00.000Z" }),
+    );
+    await store.put(
+      makeItem({ content: "second", createdAt: "2026-05-01T00:00:00.000Z" }),
+    );
     const res = await store.search({ topK: 10 });
     expect(res[0].content).toBe("second");
   });

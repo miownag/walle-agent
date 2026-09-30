@@ -13,10 +13,12 @@ export {
 export type {
   MCPClientFactory,
   MCPClientEntry,
+  MCPClientManagerOptions,
+  MCPRequestOptions,
   ManagedMCPClient,
 } from "./mcp-client-manager.js";
 
-export { adaptMCPTool, flattenMCPResult } from "./mcp-tool-adapter.js";
+export { adaptMCPTool, flattenMCPResult, normalizeMCPToolName } from "./mcp-tool-adapter.js";
 export type {
   AdaptMCPToolOptions,
   MCPClientLike,

@@ -45,6 +45,8 @@ export interface LLMChatRequest {
   responseFormat?: "text" | "json";
   /** 推理/思考控制（每次请求可覆盖 provider 默认） */
   reasoning?: ReasoningConfig;
+  /** 中断正在进行的网络请求；Provider 必须转发给底层 SDK。 */
+  signal?: AbortSignal;
   metadata?: Record<string, unknown>;
 }
 
@@ -175,6 +177,10 @@ export type LLMStreamChunk =
 ---
 
 ## OpenAI Provider 实现要点
+
+OpenAI 与 Anthropic 实现会把 `request.signal` 作为 SDK request option 转发到
+流式和非流式调用。这样 `Agent.interrupt()` 不只停止消费后续 chunk，也会真正
+终止仍在等待的 HTTP 请求。
 
 ```ts
 // @walle-agent/openai

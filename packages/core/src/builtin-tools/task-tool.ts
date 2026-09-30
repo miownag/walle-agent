@@ -70,6 +70,11 @@ export interface CreateTaskToolOptions {
    */
   defaultMaxTurns?: number;
   /**
+   * Filesystem boundary inherited by every dynamically-created child Agent.
+   * AgentRuntime supplies the parent Agent's workspaceRoot here.
+   */
+  workspaceRoot?: string;
+  /**
    * Override the tool name. Defaults to "task". Mostly useful when an
    * advanced user wants to ship a second task tool alongside the built-in.
    */
@@ -91,7 +96,7 @@ export interface CreateTaskToolOptions {
  * tool ↔ agent ↔ tool circular dependency at module load.
  */
 export function createTaskTool(opts: CreateTaskToolOptions): Tool<TaskToolInput, TaskToolOutput> {
-  const { registry, defaultModel, defaultMaxTurns } = opts;
+  const { registry, defaultModel, defaultMaxTurns, workspaceRoot } = opts;
 
   const buildDescription = (): string => {
     if (opts.description) return opts.description;
@@ -167,6 +172,7 @@ export function createTaskTool(opts: CreateTaskToolOptions): Tool<TaskToolInput,
         plugins: def.plugins,
         maxTurns: def.maxTurns ?? defaultMaxTurns,
         sessionId: def.inheritSession ? ctx.agent.sessionId : undefined,
+        workspaceRoot,
       });
 
       try {

@@ -44,7 +44,9 @@ export class MemoryManager {
       this.store = config.store;
     } else {
       if (!config.filePath) {
-        throw new Error("MemoryManager: either `store` or `filePath` is required");
+        throw new Error(
+          "MemoryManager: either `store` or `filePath` is required",
+        );
       }
       this.store = new FileMemoryStore(config.filePath);
     }
@@ -83,11 +85,16 @@ export class MemoryManager {
       topK: 5,
     });
 
-    const hit = duplicates.find((d) => jaccard(d.content, candidate.content) >= this.dedupThreshold);
+    const hit = duplicates.find(
+      (d) => jaccard(d.content, candidate.content) >= this.dedupThreshold,
+    );
 
     if (hit) {
       const merged: Partial<MemoryItem> = {
-        content: candidate.content.length > hit.content.length ? candidate.content : hit.content,
+        content:
+          candidate.content.length > hit.content.length
+            ? candidate.content
+            : hit.content,
         confidence: Math.max(hit.confidence, candidate.confidence),
         importance: Math.max(hit.importance, candidate.importance),
         tags: dedupStrings([...(hit.tags ?? []), ...(candidate.tags ?? [])]),
@@ -101,7 +108,10 @@ export class MemoryManager {
     return candidate;
   }
 
-  async retrieve(query: string, options?: MemoryRetrieveOptions): Promise<MemoryItem[]> {
+  async retrieve(
+    query: string,
+    options?: MemoryRetrieveOptions,
+  ): Promise<MemoryItem[]> {
     await this.init();
 
     const longTopK = options?.longTopK ?? this.defaultTopK;

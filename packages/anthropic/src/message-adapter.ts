@@ -19,6 +19,15 @@ type ContentBlockParam = Anthropic.ContentBlockParam;
 type Tool = Anthropic.Tool;
 type Message = Anthropic.Message;
 
+const SUPPORTED_IMAGE_MEDIA_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+] as const);
+
+type AnthropicImageMediaType = Anthropic.Base64ImageSource["media_type"];
+
 // ─── Internal → Anthropic ──────────────────────────────────────────
 
 export function toAnthropicMessages(messages: ModelMessage[]): {
@@ -37,7 +46,7 @@ export function toAnthropicMessages(messages: ModelMessage[]): {
     if (msg.role === "user") {
       result.push({
         role: "user",
-        content: contentToString(msg.content),
+        content: userContentToAnthropic(msg.content),
       });
       continue;
     }
@@ -177,15 +186,26 @@ export function fromAnthropicResponse(response: Message): LLMChatResponse {
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
   };
 
+  const cacheReadTokens = response.usage.cache_read_input_tokens ?? undefined;
+  const cacheWriteTokens =
+    response.usage.cache_creation_input_tokens ?? undefined;
+  const inputTokens =
+    response.usage.input_tokens +
+    (cacheReadTokens ?? 0) +
+    (cacheWriteTokens ?? 0);
   const usage: TokenUsage = {
-    promptTokens: response.usage.input_tokens,
+    promptTokens: inputTokens,
     completionTokens: response.usage.output_tokens,
-    totalTokens: response.usage.input_tokens + response.usage.output_tokens,
-    cacheReadTokens: (response.usage as any).cache_read_input_tokens,
-    cacheWriteTokens: (response.usage as any).cache_creation_input_tokens,
+    totalTokens: inputTokens + response.usage.output_tokens,
+    cacheReadTokens,
+    cacheWriteTokens,
   };
 
-  return { message, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, usage };
+  return {
+    message,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    usage,
+  };
 }
 
 // ─── Stream Transform ──────────────────────────────────────────────
@@ -194,7 +214,11 @@ export async function* transformAnthropicStream(
   stream: AsyncIterable<Anthropic.MessageStreamEvent>,
 ): AsyncGenerator<LLMStreamChunk> {
   const contentParts: string[] = [];
-  const thinkingAccumulators: Array<{ thinking: string; signature?: string; data?: string }> = [];
+  const thinkingAccumulators: Array<{
+    thinking: string;
+    signature?: string;
+    data?: string;
+  }> = [];
   let currentThinkingIndex: number | null = null;
   const toolCallAccumulators = new Map<
     string,
@@ -202,6 +226,7 @@ export async function* transformAnthropicStream(
   >();
   let currentToolUseId: string | null = null;
   let usage: TokenUsage | undefined;
+  let uncachedInputTokens = 0;
 
   for await (const event of stream) {
     switch (event.type) {
@@ -223,7 +248,10 @@ export async function* transformAnthropicStream(
           currentThinkingIndex = thinkingAccumulators.length;
           thinkingAccumulators.push({ thinking: "" });
         } else if ((block as any).type === "redacted_thinking") {
-          thinkingAccumulators.push({ thinking: "", data: (block as any).data });
+          thinkingAccumulators.push({
+            thinking: "",
+            data: (block as any).data,
+          });
         }
         break;
       }
@@ -270,10 +298,23 @@ export async function* transformAnthropicStream(
         // Message-level updates (stop_reason, usage)
         if ((event as any).usage) {
           const u = (event as any).usage;
+          uncachedInputTokens = u.input_tokens ?? uncachedInputTokens;
+          const cacheReadTokens =
+            u.cache_read_input_tokens ?? usage?.cacheReadTokens;
+          const cacheWriteTokens =
+            u.cache_creation_input_tokens ?? usage?.cacheWriteTokens;
+          const promptTokens =
+            uncachedInputTokens +
+            (cacheReadTokens ?? 0) +
+            (cacheWriteTokens ?? 0);
+          const completionTokens =
+            u.output_tokens ?? usage?.completionTokens ?? 0;
           usage = {
-            promptTokens: 0, // filled from message_start
-            completionTokens: u.output_tokens ?? 0,
-            totalTokens: u.output_tokens ?? 0,
+            promptTokens,
+            completionTokens,
+            totalTokens: promptTokens + completionTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
           };
         }
         break;
@@ -282,17 +323,28 @@ export async function* transformAnthropicStream(
       case "message_start": {
         if (event.message.usage) {
           const u = event.message.usage;
+          uncachedInputTokens = u.input_tokens;
+          const cacheReadTokens = u.cache_read_input_tokens ?? undefined;
+          const cacheWriteTokens = u.cache_creation_input_tokens ?? undefined;
+          const promptTokens =
+            uncachedInputTokens +
+            (cacheReadTokens ?? 0) +
+            (cacheWriteTokens ?? 0);
           usage = {
-            promptTokens: u.input_tokens,
+            promptTokens,
             completionTokens: u.output_tokens,
-            totalTokens: u.input_tokens + u.output_tokens,
+            totalTokens: promptTokens + u.output_tokens,
+            cacheReadTokens,
+            cacheWriteTokens,
           };
         }
         break;
       }
 
       case "message_stop": {
-        const toolCalls: ModelToolCall[] = [...toolCallAccumulators.values()].map((acc) => ({
+        const toolCalls: ModelToolCall[] = [
+          ...toolCallAccumulators.values(),
+        ].map((acc) => ({
           id: acc.id,
           name: acc.name,
           arguments: JSON.parse(acc.arguments || "{}"),
@@ -344,4 +396,116 @@ function contentToString(content: string | ContentBlock[] | undefined): string {
     .filter((b): b is { type: "text"; text: string } => b.type === "text")
     .map((b) => b.text)
     .join("");
+}
+
+function userContentToAnthropic(
+  content: string | ContentBlock[] | undefined,
+): string | ContentBlockParam[] {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+
+  const parts: ContentBlockParam[] = [];
+  let hasImage = false;
+
+  for (const [index, block] of content.entries()) {
+    if (block.type === "text") {
+      if (block.text) parts.push({ type: "text", text: block.text });
+      continue;
+    }
+    if (block.type !== "image") continue;
+
+    hasImage = true;
+    const source = block.source;
+    if (source.type === "base64") {
+      assertSupportedMediaType(source.mediaType, index, "Anthropic");
+      assertValidBase64(source.data, index, "Anthropic");
+      parts.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: source.mediaType as AnthropicImageMediaType,
+          data: source.data,
+        },
+      });
+      continue;
+    }
+
+    if (source.type !== "url") {
+      throw new TypeError(
+        `Anthropic user image at content block ${index} has invalid source type`,
+      );
+    }
+    assertValidImageUrl(source.url, index, "Anthropic");
+    parts.push({
+      type: "image",
+      source: { type: "url", url: source.url },
+    });
+  }
+
+  // Keep the previous string representation for text-only user content.
+  return hasImage ? parts : contentToString(content);
+}
+
+function assertSupportedMediaType(
+  mediaType: string,
+  index: number,
+  provider: string,
+): void {
+  if (!SUPPORTED_IMAGE_MEDIA_TYPES.has(mediaType as AnthropicImageMediaType)) {
+    throw new TypeError(
+      `${provider} user image at content block ${index} has unsupported media type`,
+    );
+  }
+}
+
+function assertValidBase64(
+  data: string,
+  index: number,
+  provider: string,
+): void {
+  const paddingIndex = typeof data === "string" ? data.indexOf("=") : -1;
+  const unpadded = paddingIndex === -1 ? data : data.slice(0, paddingIndex);
+  const padding = paddingIndex === -1 ? "" : data.slice(paddingIndex);
+  const valid =
+    typeof data === "string" &&
+    data.length > 0 &&
+    /^[A-Za-z0-9+/]+$/.test(unpadded) &&
+    /^(?:|=|==)$/.test(padding) &&
+    unpadded.length % 4 !== 1 &&
+    (padding.length === 0 || data.length % 4 === 0) &&
+    (padding.length === 0 || unpadded.length % 4 === 4 - padding.length);
+
+  if (!valid) {
+    throw new TypeError(
+      `${provider} user image at content block ${index} has invalid base64 data`,
+    );
+  }
+}
+
+function assertValidImageUrl(
+  value: string,
+  index: number,
+  provider: string,
+): void {
+  let url: URL;
+  try {
+    if (typeof value !== "string" || !value || value !== value.trim()) {
+      throw new Error("invalid URL");
+    }
+    url = new URL(value);
+  } catch {
+    throw new TypeError(
+      `${provider} user image at content block ${index} has invalid URL`,
+    );
+  }
+
+  if (
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
+    url.username ||
+    url.password
+  ) {
+    throw new TypeError(
+      `${provider} user image at content block ${index} must use an HTTP(S) URL without credentials`,
+    );
+  }
 }

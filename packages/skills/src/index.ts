@@ -4,7 +4,7 @@
 
 export { SkillsPlugin } from "./skills-plugin.js";
 export { SkillRegistry } from "./skill-registry.js";
-export { SkillFileStore } from "./skill-file-store.js";
+export { SkillFileStore, SkillStorePathError } from "./skill-file-store.js";
 export type { SkillStore } from "./skill-file-store.js";
 export type { SkillRegistryStores } from "./skill-registry.js";
 export type {

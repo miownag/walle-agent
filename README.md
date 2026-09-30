@@ -55,7 +55,7 @@ const result = await agent.run("Summarise the deploy runbook for me.", {
 pnpm add @walle-agent/core @walle-agent/openai
 # add only the plugins you actually use:
 pnpm add @walle-agent/memory @walle-agent/skills @walle-agent/evolution
-pnpm add @walle-agent/sandbox @walle-agent/permissions
+pnpm add @walle-agent/sandbox
 pnpm add @walle-agent/mcp @walle-agent/rag @walle-agent/trace @walle-agent/team
 ```
 
@@ -83,6 +83,16 @@ fallbacks.
 External adapters that don't ship in this repo:
 `@walle-agent/rag-qdrant`, `@walle-agent/trace-otel`. Both implement the same
 plugin interfaces from this repo.
+
+---
+
+## Applications
+
+| App | What it does | Spec |
+|---|---|---|
+| [`@walle-agent/desktop`](./apps/desktop) | Local-only Electron coding Agent with multi-session streaming, workspace tools, split panes, browser, Skills, sandbox, MCP, and Evolution controls | [23](./docs/23-desktop-app.md) |
+
+Run it from the monorepo root with `pnpm desktop:dev`.
 
 ---
 
@@ -388,15 +398,17 @@ current branch.
 
 ```
 walle-agent/
+├── apps/
+│   └── desktop/               # Electron + React local coding Agent
 ├── packages/                    # 11 SDK packages, peer-dep on @walle-agent/core
 │   ├── core/                    # micro-core: Agent, runtime, events, tools, …
 │   ├── openai/  anthropic/      # LLM providers
 │   ├── memory/  skills/  evolution/   # self-evolution stack
-│   ├── mcp/  sandbox/  permissions    # external tools + safety
+│   ├── mcp/  sandbox/          # external tools + execution boundary
 │   ├── team/                    # multi-agent orchestration
 │   └── rag/  trace/             # knowledge + observability
 ├── examples/                    # runnable demos (see table above)
-├── docs/                        # spec-driven design (INDEX.md → 01..20)
+├── docs/                        # spec-driven design (INDEX.md → 01..23)
 └── plans/                       # per-slice requirements / design / tasks / testing
 ```
 
@@ -409,6 +421,8 @@ pnpm install
 pnpm test            # vitest, all packages
 pnpm build           # tsup, all packages
 pnpm --filter @walle-agent/core test
+pnpm desktop:dev     # build SDK packages, then launch Walle Desktop
+pnpm desktop:build   # production Electron/Vite build
 ```
 
 The repo follows **Spec-Driven Development**: read the relevant `docs/*.md`

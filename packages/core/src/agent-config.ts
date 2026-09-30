@@ -168,6 +168,12 @@ export interface AgentConfig {
   /** System prompt */
   systemPrompt?: string;
   /**
+   * Optional filesystem boundary for built-in filesystem tools. Relative
+   * paths resolve from this root; absolute paths and symlinks cannot escape
+   * it. When omitted, the historical process.cwd() behavior is preserved.
+   */
+  workspaceRoot?: string;
+  /**
    * Session id. If omitted, a UUID is generated at `Agent.create` and exposed
    * via `agent.sessionId`. Used by `MemoryPlugin` to persist conversation
    * history and by `Agent.resume` to re-attach to an existing session.
@@ -225,6 +231,7 @@ export interface ResolvedAgentConfig extends Required<Pick<AgentConfig, "name" |
   sessionId: string;
   description?: string;
   systemPrompt?: string;
+  workspaceRoot?: string;
   tools: Tool[];
   plugins: WallePlugin[];
   hooks?: Partial<AgentHooks>;
@@ -254,6 +261,7 @@ export function resolveConfig(config: AgentConfig): ResolvedAgentConfig {
     description: config.description,
     model: config.model,
     systemPrompt: config.systemPrompt,
+    workspaceRoot: config.workspaceRoot,
     tools: config.tools ?? [],
     plugins: config.plugins ?? [],
     hooks: config.hooks,

@@ -36,10 +36,7 @@ export function buildRememberTools(manager: MemoryManager): Tool[] {
         .array(z.string())
         .optional()
         .describe("Optional tags for retrieval."),
-      importance: z
-        .number()
-        .optional()
-        .describe("0..1; defaults to 0.5."),
+      importance: z.number().optional().describe("0..1; defaults to 0.5."),
     },
     async (input) => {
       const item = await manager.remember({

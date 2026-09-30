@@ -21,7 +21,9 @@ describe("similarity", () => {
   });
 
   it("keywordScore returns fraction of query tokens in corpus", () => {
-    expect(keywordScore("pnpm typescript", "we use pnpm here")).toBeCloseTo(0.5);
+    expect(keywordScore("pnpm typescript", "we use pnpm here")).toBeCloseTo(
+      0.5,
+    );
     expect(keywordScore("", "anything")).toBe(0);
     expect(keywordScore("nothing matches", "completely different")).toBe(0);
   });

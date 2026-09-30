@@ -123,7 +123,10 @@ export class EvolutionPlugin implements WallePlugin {
 }
 ```
 
-> **后台执行**：evolution 在 `onRunEnd` 钩子中 **fire-and-forget** 派发，不阻塞用户响应。任何异常都被吞掉并打印到 stderr，不会让 agent run 失败。
+> **后台执行与销毁**：evolution 在 `onRunEnd` 钩子中异步派发，不阻塞用户响应；
+> 插件会跟踪每个后台 job。`dispose()` 会先 abort review request，再等待所有 job settle，
+> 且引擎在任何提案/记忆/Skill 写入前复验 signal。这样删除桌面会话后不会由迟到的
+> review 重建 runtime 目录，也不会产生未处理的 Promise rejection。
 
 ---
 
@@ -140,7 +143,7 @@ export class EvolutionPlugin implements WallePlugin {
 关键特性：
 
 - **容错**：任何一个触发失败都会被捕获，不会把异常抛回 agent run。
-- **后台执行**：`EvolutionPlugin` 通过 `onRunEnd` 钩子 **fire-and-forget** 调度引擎，用户响应不会被阻塞。
+- **后台执行**：`EvolutionPlugin` 通过 `onRunEnd` 钩子调度并跟踪引擎 job，用户响应不会被阻塞；dispose 会 abort/await。
 - **可测试**：`engine.afterRun(ctx)` 与 `plugin.runEvolution(...)` 是纯函数式入口，vitest 中可以不过 Agent 直接驱动。
 - **JSON 容错**：Provider 返回的 `json` 响应允许被 ```json``` 围栏包裹 / 带解释文字；引擎会尽力解析，失败就按"无提案"处理。
 

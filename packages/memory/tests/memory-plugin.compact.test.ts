@@ -18,7 +18,10 @@ async function tmpDir(): Promise<string> {
   return dir;
 }
 
-function makeContext(plugin: MemoryPlugin): { events: EventBus; ctx: AgentContextImpl } {
+function makeContext(plugin: MemoryPlugin): {
+  events: EventBus;
+  ctx: AgentContextImpl;
+} {
   const events = new EventBus();
   const toolRegistry = new ToolRegistry();
   const hookManager = new HookManager();
@@ -42,7 +45,10 @@ function makeContext(plugin: MemoryPlugin): { events: EventBus; ctx: AgentContex
 
 const sys = (text: string): ModelMessage => ({ role: "system", content: text });
 const user = (text: string): ModelMessage => ({ role: "user", content: text });
-const asst = (text: string): ModelMessage => ({ role: "assistant", content: text });
+const asst = (text: string): ModelMessage => ({
+  role: "assistant",
+  content: text,
+});
 const tool = (id: string, content: string, name = "do"): ModelMessage => ({
   role: "tool",
   toolCallId: id,

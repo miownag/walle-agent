@@ -19,7 +19,10 @@ describe("SessionLog", () => {
 
   it("round-trips messages in insertion order", async () => {
     await log.appendMessage("s1", "r1", 0, { role: "user", content: "hi" });
-    await log.appendMessage("s1", "r1", 1, { role: "assistant", content: "hello" });
+    await log.appendMessage("s1", "r1", 1, {
+      role: "assistant",
+      content: "hello",
+    });
     await log.flush();
 
     const records = await log.readMessages("s1");
@@ -44,9 +47,76 @@ describe("SessionLog", () => {
     expect(records.map((r) => r.message.content)).toEqual(["a", "b", "c"]);
   });
 
+  it("atomically replaces prior history in queue order and appends after the snapshot", async () => {
+    await log.appendMessage("s1", "r1", 0, {
+      role: "user",
+      content: "obsolete head",
+    });
+
+    const replacement = [
+      {
+        role: "user" as const,
+        content: "[Summary of 4 earlier messages]\nsummary",
+        metadata: { summary: true },
+      },
+      { role: "assistant" as const, content: "protected tail" },
+    ];
+    const replace = log.replaceMessages("s1", "manual", replacement);
+    // The replacement API snapshots synchronously rather than retaining a
+    // mutable caller-owned array until its queued disk turn arrives.
+    replacement[0].content = "mutated after enqueue";
+    const append = log.appendMessage("s1", "r2", 2, {
+      role: "user",
+      content: "after compact",
+    });
+
+    await Promise.all([replace, append]);
+    const records = await log.readMessages("s1");
+    expect(records.map((record) => record.message.content)).toEqual([
+      "[Summary of 4 earlier messages]\nsummary",
+      "protected tail",
+      "after compact",
+    ]);
+  });
+
+  it("leaves the old log intact when replacement serialization fails", async () => {
+    await log.appendMessage("s1", "r1", 0, {
+      role: "user",
+      content: "still durable",
+    });
+
+    const invalid = {
+      role: "user" as const,
+      content: "cannot serialize",
+      metadata: { bigint: BigInt(1) },
+    };
+    await expect(
+      log.replaceMessages("s1", "manual", [invalid]),
+    ).rejects.toThrow();
+
+    // A failed replacement must not poison the per-session queue.
+    await log.appendMessage("s1", "r2", 0, {
+      role: "assistant",
+      content: "later write",
+    });
+    const records = await log.readMessages("s1");
+    expect(records.map((record) => record.message.content)).toEqual([
+      "still durable",
+      "later write",
+    ]);
+    expect(
+      (await fs.readdir(path.join(dir, "s1"))).filter((name) =>
+        name.endsWith(".tmp"),
+      ),
+    ).toEqual([]);
+  });
+
   it("tracks run starts + ends and returns last prior run", async () => {
     await log.appendRunStart("s1", "r1");
-    await log.appendRunEnd("s1", "r1", { endAt: new Date().toISOString(), status: "completed" });
+    await log.appendRunEnd("s1", "r1", {
+      endAt: new Date().toISOString(),
+      status: "completed",
+    });
     await log.appendRunStart("s1", "r2");
     await log.appendRunEnd("s1", "r2", {
       endAt: new Date().toISOString(),

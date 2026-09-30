@@ -68,7 +68,10 @@ export class OpenAIProvider implements LLMProvider {
       ...this.buildReasoningExtras(request.reasoning),
     };
 
-    const response = await this.client.chat.completions.create(params as any);
+    const response = await this.client.chat.completions.create(
+      params as any,
+      request.signal ? { signal: request.signal } : undefined,
+    );
 
     return fromOpenAIResponse(response);
   }
@@ -90,7 +93,10 @@ export class OpenAIProvider implements LLMProvider {
       ...this.buildReasoningExtras(request.reasoning),
     };
 
-    const stream = await this.client.chat.completions.create(params as any);
+    const stream = await this.client.chat.completions.create(
+      params as any,
+      request.signal ? { signal: request.signal } : undefined,
+    );
 
     yield* transformOpenAIStream(stream as any);
   }

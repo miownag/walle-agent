@@ -34,6 +34,10 @@ export interface MCPClientLike {
   callTool(params: {
     name: string;
     arguments: Record<string, unknown>;
+  }, resultSchema?: unknown, options?: {
+    signal?: AbortSignal;
+    timeout?: number;
+    maxTotalTimeout?: number;
   }): Promise<MCPToolCallResult>;
 }
 
@@ -44,6 +48,10 @@ export interface AdaptMCPToolOptions {
   client: MCPClientLike;
   mcpTool: MCPToolDescriptor;
   config: MCPServerConfig;
+  /** Maximum duration for one MCP tool request. Default: 60 seconds. */
+  callTimeoutMs?: number;
+  /** Close/invalidate an unresponsive client after cancellation or timeout. */
+  onUnresponsive?: (reason: unknown) => Promise<void> | void;
 }
 
 /**
@@ -51,9 +59,10 @@ export interface AdaptMCPToolOptions {
  * parameters and error routing are normalised here.
  */
 export function adaptMCPTool(options: AdaptMCPToolOptions): Tool {
-  const { serverName, client, mcpTool, config } = options;
+  const { serverName, client, mcpTool, config, onUnresponsive } = options;
+  const callTimeoutMs = positiveTimeout(options.callTimeoutMs, 60_000);
   const prefix = config.toolPrefix ?? `mcp_${serverName}_`;
-  const toolName = `${prefix}${mcpTool.name}`;
+  const toolName = normalizeMCPToolName(`${prefix}${mcpTool.name}`);
 
   const parameters =
     (mcpTool.inputSchema as Tool["parameters"] | undefined) ?? {
@@ -72,12 +81,48 @@ export function adaptMCPTool(options: AdaptMCPToolOptions): Tool {
 
     async execute(
       input: Record<string, unknown>,
-      _ctx: ToolExecutionContext,
+      ctx: ToolExecutionContext,
     ): Promise<string> {
-      const result = await client.callTool({
-        name: mcpTool.name,
-        arguments: input ?? {},
-      });
+      const controller = new AbortController();
+      const forwardAbort = () => controller.abort(ctx.signal?.reason);
+      if (ctx.signal?.aborted) forwardAbort();
+      else ctx.signal?.addEventListener("abort", forwardAbort, { once: true });
+      const timeoutError = new Error(`MCP tool “${toolName}” timed out after ${callTimeoutMs}ms`);
+      timeoutError.name = "TimeoutError";
+      const timer = setTimeout(() => controller.abort(timeoutError), callTimeoutMs);
+      timer.unref?.();
+      const aborted = controller.signal.aborted
+        ? Promise.reject<never>(abortError(toolName, controller.signal.reason))
+        : new Promise<never>((_resolve, reject) => {
+            controller.signal.addEventListener("abort", () => reject(abortError(toolName, controller.signal.reason)), { once: true });
+          });
+      let result: MCPToolCallResult;
+      try {
+        result = await Promise.race([
+          client.callTool({
+            name: mcpTool.name,
+            arguments: input ?? {},
+          }, undefined, {
+            signal: controller.signal,
+            timeout: callTimeoutMs,
+            maxTotalTimeout: callTimeoutMs,
+          }),
+          aborted,
+        ]);
+      } catch (error) {
+        if (controller.signal.aborted && onUnresponsive) {
+          try {
+            await onUnresponsive(error);
+          } catch (closeError) {
+            // eslint-disable-next-line no-console
+            console.error(`[mcp] failed to close unresponsive client for ${toolName}:`, closeError);
+          }
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        ctx.signal?.removeEventListener("abort", forwardAbort);
+      }
 
       const flattened = flattenMCPResult(result);
 
@@ -88,6 +133,28 @@ export function adaptMCPTool(options: AdaptMCPToolOptions): Tool {
       return flattened;
     },
   };
+}
+
+/** Provider-safe, deterministic function name (`[A-Za-z0-9_-]`, max 64). */
+export function normalizeMCPToolName(value: string): string {
+  const normalized = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "") || "mcp_tool";
+  return normalized.slice(0, 64);
+}
+
+function positiveTimeout(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function abortError(toolName: string, reason: unknown): Error {
+  if (reason instanceof Error) return reason;
+  const error = new Error(`MCP tool “${toolName}” cancelled${typeof reason === "string" ? `: ${reason}` : ""}`);
+  error.name = "AbortError";
+  return error;
 }
 
 /**

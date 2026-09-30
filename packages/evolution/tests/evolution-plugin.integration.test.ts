@@ -70,6 +70,28 @@ class MockProvider implements LLMProvider {
   }
 }
 
+class DeferredReviewProvider extends MockProvider {
+  reviewSignal?: AbortSignal;
+  private resolveStarted!: () => void;
+  private resolveReview?: (value: LLMChatResponse) => void;
+  readonly reviewStarted = new Promise<void>((resolve) => {
+    this.resolveStarted = resolve;
+  });
+
+  override async chat(request: LLMChatRequest): Promise<LLMChatResponse> {
+    this.chatCalls.push(request);
+    this.reviewSignal = request.signal;
+    this.resolveStarted();
+    return new Promise<LLMChatResponse>((resolve) => {
+      this.resolveReview = resolve;
+    });
+  }
+
+  releaseReview(content: string): void {
+    this.resolveReview?.({ message: { role: "assistant", content } });
+  }
+}
+
 async function waitForCondition(check: () => boolean | Promise<boolean>, ms = 1000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < ms) {
@@ -130,6 +152,48 @@ describe("EvolutionPlugin — integration", () => {
     expect(stored[0].content).toContain("pnpm");
 
     await agent.dispose();
+  });
+
+  it("dispose aborts and awaits an in-flight background review before returning", async () => {
+    const mp = new DeferredReviewProvider([{ content: "Got it." }]);
+    const memoryPlugin = new MemoryPlugin({ rootDir: root });
+    const evolutionPlugin = new EvolutionPlugin({
+      rootDir: path.join(root, "evolution"),
+      explicitRemember: { enabled: true },
+      memoryCreation: { enabled: true },
+    });
+    const agent = await Agent.create({
+      name: "test",
+      model: mp,
+      plugins: [memoryPlugin, evolutionPlugin],
+      useBuiltinTools: false,
+    });
+
+    await agent.run("remember this", { sessionId: "s1" });
+    await mp.reviewStarted;
+
+    let disposed = false;
+    const disposing = agent.dispose().then(() => {
+      disposed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(mp.reviewSignal?.aborted).toBe(true);
+    expect(disposed).toBe(false);
+
+    mp.releaseReview(JSON.stringify({
+      memories: [{
+        type: "fact",
+        content: "must not be persisted after dispose",
+        importance: 0.9,
+        confidence: 0.9,
+        scope: "long",
+      }],
+    }));
+    await disposing;
+
+    expect(await evolutionPlugin.pending()).toHaveLength(0);
+    expect(await memoryPlugin.manager.list()).toHaveLength(0);
   });
 
   it("periodic review fires every N runs and proposes memories", async () => {

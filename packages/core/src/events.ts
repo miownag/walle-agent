@@ -56,6 +56,13 @@ export interface AgentEventMap {
     after: number;
     /** The summary text inserted as a synthesised user message. */
     summary: string;
+    /**
+     * Snapshot of the complete post-compaction message list. Persistence
+     * plugins use this to replace stale pre-compaction history atomically.
+     * Runtime-only system/context messages may be omitted by a store whose
+     * log is defined as conversation history only.
+     */
+    messages: ReadonlyArray<ModelMessage>;
   };
   /**
    * Emitted by the built-in `read_tool_result` tool. Listeners with vault

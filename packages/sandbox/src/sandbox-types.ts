@@ -24,6 +24,8 @@ export interface SandboxCommand {
   timeoutMs?: number;
   /** Pipe to stdin. */
   stdin?: string;
+  /** Cancels the running subprocess (for example when an Agent is interrupted). */
+  signal?: AbortSignal;
 }
 
 export interface SandboxResult {
@@ -69,6 +71,8 @@ export interface SandboxRunnerOptions {
   input?: string;
   /** Always `false` — we want non-zero exit codes as resolved values, not throws. */
   reject?: false;
+  /** Forwarded to execa so cancellation terminates the subprocess. */
+  cancelSignal?: AbortSignal;
 }
 
 export interface SandboxRunnerResult {

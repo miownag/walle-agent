@@ -40,7 +40,7 @@
 ./.walle/
   sessions/
     <sessionId>/
-      messages.jsonl    # append-only；每行一个 ModelMessage
+      messages.jsonl    # 每行一个 ModelMessage；macro 后原子替换为压缩快照
       runs.jsonl        # append-only；每个 run 的生命周期记录
   memory/
     memories.jsonl              # 长期记忆
@@ -55,17 +55,20 @@
 
 ## Short-Term Memory：会话日志（file-backed）
 
-与传统 "in-memory buffer" 不同，Walle 的 STM 直接写文件系统。每条消息在产生时立即 append 到 `messages.jsonl`，不等 run 结束：
+与传统 "in-memory buffer" 不同，Walle 的 STM 直接写文件系统。正常 run 中每条消息在产生时立即 append 到 `messages.jsonl`，不等 run 结束；成功的 macro compaction 会把文件原子替换为压缩后的 conversation 快照：
 
-| 时机                       | 写入                                       |
-|----------------------------|--------------------------------------------|
-| `onRunStart`               | `runs.jsonl` append `{runId, startAt}`；`messages.jsonl` append 当前 user message |
-| `afterModelCall`           | `messages.jsonl` append assistant message   |
-| `afterToolCall`（普通）     | `messages.jsonl` append 完整 tool message   |
-| `afterToolCall`（超大）     | 先写 `large-tool-results/<id>.txt`，再在 jsonl append 一个 **envelope 占位**（见下） |
-| `onRunEnd`                 | `runs.jsonl` append `{runId, endAt, status}`|
+| 时机                    | 写入                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------ |
+| `onRunStart`            | `runs.jsonl` append `{runId, startAt}`；`messages.jsonl` append 当前 user message    |
+| `afterModelCall`        | `messages.jsonl` append assistant message                                            |
+| `afterToolCall`（普通） | `messages.jsonl` append 完整 tool message                                            |
+| `afterToolCall`（超大） | 先写 `large-tool-results/<id>.txt`，再在 jsonl append 一个 **envelope 占位**（见下） |
+| `compaction_done`       | 同一 session 写队列内，以临时文件 + rename 原子替换为 `summary + protected tail`     |
+| `onRunEnd`              | `runs.jsonl` append `{runId, endAt, status}`                                         |
 
-**好处**：崩溃不丢；可以 tail -f；另一个进程可以实时读取。
+`SessionLog` 把 append、replace 和 read 都放进同一条 per-session 队列；replace 先完整写入并 sync 同目录临时文件，再 rename 覆盖。因此失败时旧日志保持不变，成功后 reader 只会看到旧版或完整新版，不会看到半份 JSONL。Runtime 的 system prompt / 动态 context 不进入 session history，下一次由 `PromptBuilder` 重新生成。
+
+所有写入（普通 user/assistant append 与 macro replace）都先经过同一条 on-disk message 净化路径。内嵌 `ImageBlock` 的 base64 字节只在当前模型请求中短暂存在，不写入 `messages.jsonl`；附件的安全文字 trace 与调用方写进 prompt 的文件路径会保留，因此重启后仍能解释该轮引用过什么文件，但不会重新发送或长期保存图片字节。嵌套在 `tool_result` content blocks 中的 base64 图片同样会被递归移除。
 
 ### 注入 history 到 prompt
 
@@ -80,7 +83,7 @@ messages = this.promptBuilder.build({
   input,
   context: budgetedItems,
   tools,
-  conversationHistory: history,   // ← 新增
+  conversationHistory: history, // ← 新增
 });
 ```
 
@@ -111,6 +114,7 @@ Tool call 返回超过阈值（默认 `20000` chars，参考 `deepagents`）的�
      })
    }
    ```
+
    `preview` = head N 行 + `... [M lines truncated] ...` + tail N 行（默认各 30 行）。
 
 3. **下次 `agent.run()` 再读会话历史**时（由 `collect_messages` 触发），envelope 会被渲染成摘要字符串：
@@ -121,6 +125,7 @@ Tool call 返回超过阈值（默认 `20000` chars，参考 `deepagents`）的�
 
    <preview>
    ```
+
    这与 deepagents 的 `TOO_LARGE_TOOL_MSG` 语义一致。Agent 可以用 `read_file` 拉具体切片。
 
 ### "下一轮" 的定义与 cancel-resume 语义
@@ -132,18 +137,22 @@ Tool call 返回超过阈值（默认 `20000` chars，参考 `deepagents`）的�
 Runtime 通过 `onRunEnd.status` 将 status 持久化到 `runs.jsonl`。`MemoryPlugin` 在加载 history 时读取 `runs.jsonl` 尾部：
 
 ```ts
-const lastRun = await sessionLog.lastRun(sessionId, /* excludeRunId = */ currentRunId);
+const lastRun = await sessionLog.lastRun(
+  sessionId,
+  /* excludeRunId = */ currentRunId,
+);
 const lastCancelledRunId =
   lastRun?.status === "user-cancelled" ? lastRun.runId : undefined;
 
 // 加载消息：
 for (const rec of records) {
-  if (rec.runId === currentRunId) continue;         // 当前 run 已经在 PromptBuilder 里
+  if (rec.runId === currentRunId) continue; // 当前 run 已经在 PromptBuilder 里
   const envelope = tryDecodeEviction(msg.content);
   if (envelope) {
-    const full = rec.runId === lastCancelledRunId
-      ? await vault.readFull(envelope.toolCallId)   // 完整还原
-      : vault.formatSummary(envelope);              // 摘要
+    const full =
+      rec.runId === lastCancelledRunId
+        ? await vault.readFull(envelope.toolCallId) // 完整还原
+        : vault.formatSummary(envelope); // 摘要
     push({ ...msg, content: full ?? vault.formatSummary(envelope) });
   } else {
     push(msg);
@@ -161,31 +170,31 @@ export interface MemoryPluginConfig {
   rootDir?: string;
 
   sessions?: {
-    enabled?: boolean;      // 默认 true
-    dir?: string;           // 默认 <rootDir>/sessions
+    enabled?: boolean; // 默认 true
+    dir?: string; // 默认 <rootDir>/sessions
   };
 
   largeToolResults?: {
-    enabled?: boolean;      // 默认 true
-    dir?: string;           // 默认 <rootDir>/memory/large-tool-results
-    thresholdChars?: number;  // 默认 20000
-    previewHeadLines?: number;// 默认 30
-    previewTailLines?: number;// 默认 30
+    enabled?: boolean; // 默认 true
+    dir?: string; // 默认 <rootDir>/memory/large-tool-results
+    thresholdChars?: number; // 默认 20000
+    previewHeadLines?: number; // 默认 30
+    previewTailLines?: number; // 默认 30
   };
 
   longTerm?: {
-    enabled?: boolean;      // 默认 true
-    filePath?: string;      // 默认 <rootDir>/memory/memories.jsonl
-    topK?: number;          // 默认 8
-    dedupThreshold?: number;// 默认 0.8（Jaccard）
+    enabled?: boolean; // 默认 true
+    filePath?: string; // 默认 <rootDir>/memory/memories.jsonl
+    topK?: number; // 默认 8
+    dedupThreshold?: number; // 默认 0.8（Jaccard）
   };
 }
 
 export class MemoryPlugin implements WallePlugin {
   name = "memory";
-  readonly manager: MemoryManager;        // 长期记忆 API
-  readonly sessionLog?: SessionLog;       // 会话日志
-  readonly vault?: ToolResultVault;       // 大 tool result 外溢
+  readonly manager: MemoryManager; // 长期记忆 API
+  readonly sessionLog?: SessionLog; // 会话日志
+  readonly vault?: ToolResultVault; // 大 tool result 外溢
 
   async install(ctx: AgentContext): Promise<void> {
     // 注册 remember / recall / forget 三个 tool
@@ -219,14 +228,14 @@ export interface MemoryItem {
   scope: MemoryScope;
   type: MemoryType;
   content: string;
-  importance: number;  // 0..1
-  confidence: number;  // 0..1
+  importance: number; // 0..1
+  confidence: number; // 0..1
   userId?: string;
   sessionId?: string;
   tags?: string[];
   createdAt: string;
   updatedAt?: string;
-  expiresAt?: string;  // 留给 MTM
+  expiresAt?: string; // 留给 MTM
   source?: {
     conversationId?: string;
     messageIds?: string[];
@@ -241,7 +250,7 @@ export interface MemoryItem {
 
 ```ts
 export class MemoryManager {
-  readonly store: MemoryStore;   // FileMemoryStore by default
+  readonly store: MemoryStore; // FileMemoryStore by default
 
   async remember(input: RememberInput): Promise<MemoryItem> {
     // 1) 在同 scope + type 下，按 Jaccard >= dedupThreshold 查近似
@@ -270,7 +279,11 @@ export interface MemoryStore {
   update(id: string, patch: Partial<MemoryItem>): Promise<void>;
   delete(id: string): Promise<void>;
   search(query: MemoryQuery): Promise<MemoryItem[]>;
-  list(options?: { scope?: MemoryScope; limit?: number; offset?: number }): Promise<MemoryItem[]>;
+  list(options?: {
+    scope?: MemoryScope;
+    limit?: number;
+    offset?: number;
+  }): Promise<MemoryItem[]>;
 }
 
 export interface MemoryQuery {
@@ -301,11 +314,11 @@ export class FileMemoryStore implements MemoryStore {
 
 插件注册三个 builtin 工具给 LLM：
 
-| 工具        | 描述                                                   | riskLevel |
-|-------------|--------------------------------------------------------|-----------|
-| `remember`  | 写入 LTM（自动去重合并）                                | low       |
-| `recall`    | 关键词检索 LTM                                          | low       |
-| `forget`    | 按 id 删除，需审批                                      | medium    |
+| 工具       | 描述                     | riskLevel |
+| ---------- | ------------------------ | --------- |
+| `remember` | 写入 LTM（自动去重合并） | low       |
+| `recall`   | 关键词检索 LTM           | low       |
+| `forget`   | 按 id 删除，需审批       | medium    |
 
 工具的 prompt 描述参考 deepagents 的 memory guidelines，引导 LLM 在用户明确要求/隐含表达长期偏好时才写入，而不是把临时请求也记下来。
 

@@ -8,7 +8,7 @@ Walle is a TypeScript Agent SDK that lets you build your own agents. It is desig
 
 ## Repo Layout
 
-This is a **pnpm monorepo** (`pnpm-workspace.yaml` covers `packages/*` and `examples`).
+This is a **pnpm monorepo** (`pnpm-workspace.yaml` covers `packages/*`, `apps/*`, and `examples`).
 
 ```
 walle-agent/
@@ -19,6 +19,8 @@ walle-agent/
 │   └── INDEX.md             # Spec index — READ THIS FIRST
 ├── plans/                   # Long-term development plans (one folder per task)
 │   └── README.md            # Explains plan folder structure
+├── apps/
+│   └── desktop/             # @walle-agent/desktop — Electron + React local coding Agent
 ├── packages/                # Each is an independently published npm package
 │   ├── core/                # @walle-agent/core — Agent, Runtime, Tool, Hooks, EventBus, TokenBudget
 │   ├── openai/              # @walle-agent/openai — OpenAI LLM Provider
@@ -43,7 +45,7 @@ walle-agent/
 
 This repo is built spec-first.
 
-1. **Before coding**, read [`docs/INDEX.md`](./docs/INDEX.md) and the relevant numbered spec (`01-architecture.md` … `20-builtin-tools.md`).
+1. **Before coding**, read [`docs/INDEX.md`](./docs/INDEX.md) and the relevant numbered spec (`01-architecture.md` … `23-desktop-app.md`).
 2. **After coding**, if behavior diverges from the spec, **update the spec in the same change**. Specs are the source of truth — stale specs are bugs.
 
 ---
@@ -73,6 +75,8 @@ Run from the repo root unless noted.
 | `pnpm install` | Install workspace deps |
 | `pnpm build` | Build all packages (`pnpm -r build` → `tsup`) |
 | `pnpm test` | Run vitest across all packages (`packages/*/tests/**/*.test.ts`) |
+| `pnpm desktop:dev` | Build SDK dependencies and launch the Electron desktop app |
+| `pnpm desktop:build` | Build the desktop app with electron-vite |
 | `pnpm test:watch` | Watch-mode tests |
 | `pnpm lint` | ESLint over `packages/*/src/**/*.ts` |
 | `pnpm clean` | Remove all `dist/` outputs |
@@ -87,8 +91,8 @@ Node `>= 20`, pnpm `10.29.x` (see `packageManager`).
 - **File / folder names: kebab-case.** No exceptions.
 - **TypeScript:** `strict: true`, ESM (`"type": "module"`), `verbatimModuleSyntax`. Use `import type { ... }` for types.
 - **Public API:** every package re-exports its public surface from `src/index.ts`. Don't import from a package's internal paths.
-- **Tests:** colocate per package under `packages/<pkg>/tests/`, named `*.test.ts`.
-- **Build tool:** `tsup` per package; output to `dist/` (CJS + ESM + `.d.ts`).
+- **Tests:** colocate SDK tests under `packages/<pkg>/tests/`; app tests stay beside app source. Name them `*.test.ts` / `*.test.tsx`.
+- **Build tool:** `tsup` per SDK package; Electron app uses electron-vite.
 - **Workspace deps:** use `workspace:*` (see `examples/package.json`).
 - **Ask first** when a spec or requirement is unclear — don't silently invent behavior. SDD relies on this.
 

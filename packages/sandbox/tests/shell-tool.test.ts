@@ -77,6 +77,17 @@ describe("buildShellTool", () => {
     });
   });
 
+  it("forwards the tool AbortSignal to the sandbox", async () => {
+    const { sandbox, calls } = fakeSandbox();
+    const controller = new AbortController();
+    const tool = buildShellTool(sandbox);
+    await tool.execute(
+      { command: "sleep 10" },
+      { agent: undefined as never, signal: controller.signal },
+    );
+    expect(calls[0].signal).toBe(controller.signal);
+  });
+
   it("propagates sandbox throws", async () => {
     const sandbox: Sandbox = {
       name: "fake",

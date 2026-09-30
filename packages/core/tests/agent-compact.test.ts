@@ -4,7 +4,14 @@
 
 import { describe, it, expect } from "vitest";
 import { Agent } from "../src/agent.js";
-import type { LLMProvider, LLMChatRequest, LLMStreamChunk, ModelMessage } from "../src/index.js";
+import type {
+  AgentEventMap,
+  LLMProvider,
+  LLMChatRequest,
+  LLMStreamChunk,
+  ModelMessage,
+  WallePlugin,
+} from "../src/index.js";
 
 class ScriptedProvider implements LLMProvider {
   name = "scripted";
@@ -69,6 +76,89 @@ describe("Agent.compact() (manual)", () => {
     expect(r.droppedMessages).toBe(0);
     await agent.dispose();
   });
+
+  it("emits the complete post-compaction snapshot after summarization succeeds", async () => {
+    const history: ModelMessage[] = [
+      { role: "user", content: "old user 1" },
+      { role: "assistant", content: "old assistant 1" },
+      { role: "user", content: "old user 2" },
+      { role: "assistant", content: "old assistant 2" },
+      { role: "user", content: "recent user" },
+      { role: "assistant", content: "recent assistant" },
+    ];
+    let completed: AgentEventMap["compaction_done"] | undefined;
+    const historyPlugin: WallePlugin = {
+      name: "compact-history",
+      install(ctx) {
+        ctx.events.on("collect_messages", ({ into }) => {
+          into.push(...history);
+        });
+        ctx.events.on("compaction_done", (payload) => {
+          completed = payload;
+        });
+      },
+    };
+    const summaryModel = new ScriptedProvider([
+      fakeAssistantTurn("durable summary"),
+    ]);
+    const agent = await Agent.create({
+      name: "a",
+      model: new ScriptedProvider([]),
+      plugins: [historyPlugin],
+    });
+
+    const result = await agent.compact({
+      keepRecentTurns: 1,
+      summaryModel,
+    });
+
+    expect(result.droppedMessages).toBeGreaterThan(0);
+    expect(completed?.messages.map((message) => message.content)).toEqual([
+      "[Summary of 5 earlier messages]\ndurable summary",
+      "recent assistant",
+    ]);
+    expect(completed?.after).toBe(2);
+    await agent.dispose();
+  });
+
+  it("does not emit compaction_done when summarization fails", async () => {
+    let completed = false;
+    const historyPlugin: WallePlugin = {
+      name: "compact-history",
+      install(ctx) {
+        ctx.events.on("collect_messages", ({ into }) => {
+          into.push(
+            { role: "user", content: "old user" },
+            { role: "assistant", content: "old assistant" },
+            { role: "assistant", content: "recent assistant" },
+          );
+        });
+        ctx.events.on("compaction_done", () => {
+          completed = true;
+        });
+      },
+    };
+    const failingSummaryModel: LLMProvider = {
+      name: "failing-summary",
+      async chat() {
+        throw new Error("not used");
+      },
+      async *stream() {
+        yield { type: "error", error: new Error("summary failed") };
+      },
+    };
+    const agent = await Agent.create({
+      name: "a",
+      model: new ScriptedProvider([]),
+      plugins: [historyPlugin],
+    });
+
+    await expect(
+      agent.compact({ keepRecentTurns: 1, summaryModel: failingSummaryModel }),
+    ).rejects.toThrow("summary failed");
+    expect(completed).toBe(false);
+    await agent.dispose();
+  });
 });
 
 describe("auto macro compression", () => {
@@ -95,7 +185,10 @@ describe("auto macro compression", () => {
         summaryCalls.push(req);
         yield {
           type: "message_complete",
-          message: { role: "assistant", content: "summary text" } as ModelMessage,
+          message: {
+            role: "assistant",
+            content: "summary text",
+          } as ModelMessage,
           toolCalls: [],
         };
       },

@@ -102,11 +102,15 @@ describe("MemoryPlugin integration", () => {
 
     // The LLM request should have seen prior messages.
     const history = mp2.calls[0].messages;
-    const userTexts = history.filter((m) => m.role === "user").map((m) => m.content);
+    const userTexts = history
+      .filter((m) => m.role === "user")
+      .map((m) => m.content);
     expect(userTexts).toContain("Remember that I prefer TypeScript");
     expect(userTexts).toContain("What language do I prefer?");
 
-    const assistantTexts = history.filter((m) => m.role === "assistant").map((m) => m.content);
+    const assistantTexts = history
+      .filter((m) => m.role === "assistant")
+      .map((m) => m.content);
     expect(assistantTexts).toContain("Got it, I'll remember.");
 
     await agent2.dispose();
@@ -114,12 +118,7 @@ describe("MemoryPlugin integration", () => {
 
   it("B — oversized tool result is evicted; next run sees a summary", async () => {
     const huge = "x".repeat(5000);
-    const bigTool = defineTool(
-      "get_log",
-      "Fetch a log",
-      {},
-      async () => huge,
-    );
+    const bigTool = defineTool("get_log", "Fetch a log", {}, async () => huge);
 
     const mp1 = new MockProvider([
       { toolCalls: [{ id: "tc-1", name: "get_log", arguments: {} }] },
@@ -181,12 +180,7 @@ describe("MemoryPlugin integration", () => {
 
   it("C — cancel-and-resume: the cancelled run's tool result is rehydrated to full", async () => {
     const huge = "y".repeat(4000);
-    const bigTool = defineTool(
-      "get_log",
-      "Fetch a log",
-      {},
-      async () => huge,
-    );
+    const bigTool = defineTool("get_log", "Fetch a log", {}, async () => huge);
 
     // Run #1 completes (for baseline comparison)
     const plugin1 = new MemoryPlugin({
@@ -235,7 +229,11 @@ describe("MemoryPlugin integration", () => {
       tools: [cancellingTool],
       useBuiltinTools: false,
     });
-    const streamB = agentB.run("B", { stream: true, sessionId: "s1", signal: controller.signal });
+    const streamB = agentB.run("B", {
+      stream: true,
+      sessionId: "s1",
+      signal: controller.signal,
+    });
     let endEvent: any;
     for await (const ev of streamB) {
       if (ev.type === "run_end") endEvent = ev;
@@ -310,7 +308,9 @@ describe("MemoryPlugin integration", () => {
       plugins: [plugin2],
       useBuiltinTools: false,
     });
-    await agent2.run("Which package manager should I use?", { sessionId: "s1" });
+    await agent2.run("Which package manager should I use?", {
+      sessionId: "s1",
+    });
 
     const req = mp2.calls[0];
     const systemMsg = req.messages.find((m) => m.role === "system");
@@ -322,7 +322,10 @@ describe("MemoryPlugin integration", () => {
   });
 
   it("E — dedup: two near-identical remember calls end up as one memory", async () => {
-    const plugin = new MemoryPlugin({ rootDir: root, longTerm: { dedupThreshold: 0.5 } });
+    const plugin = new MemoryPlugin({
+      rootDir: root,
+      longTerm: { dedupThreshold: 0.5 },
+    });
 
     const mp = new MockProvider([
       {
@@ -330,7 +333,10 @@ describe("MemoryPlugin integration", () => {
           {
             id: "t1",
             name: "remember",
-            arguments: { content: "user prefers typescript", type: "preference" },
+            arguments: {
+              content: "user prefers typescript",
+              type: "preference",
+            },
           },
         ],
       },

@@ -8,6 +8,7 @@ import type { ToolCallRecord } from "./tool.js";
 import type { AgentInput, AgentResult } from "./agent-config.js";
 import type { LLMStreamChunk } from "./llm-provider.js";
 import type { RunStatus } from "./events.js";
+import type { TokenUsage } from "./types.js";
 
 // ─── Stream Event Types ────────────────────────────────────────────
 
@@ -36,10 +37,18 @@ export interface ModelCallStartEvent {
 export interface ModelCallEndEvent {
   type: "model_call_end";
   message: ModelMessage;
+  /** Token usage for this model call, when reported by the provider. */
+  usage?: TokenUsage;
 }
 
 export interface TextDeltaEvent {
   type: "text_delta";
+  content: string;
+}
+
+/** Provider reasoning/thinking content mirrored from one LLM chunk. */
+export interface ThinkingDeltaEvent {
+  type: "thinking_delta";
   content: string;
 }
 
@@ -76,6 +85,7 @@ export type AgentStreamEvent =
   | ModelCallStartEvent
   | ModelCallEndEvent
   | TextDeltaEvent
+  | ThinkingDeltaEvent
   | ToolCallDeltaEvent
   | ToolCallStartEvent
   | ToolCallEndEvent
@@ -103,6 +113,7 @@ export class AgentStream implements AsyncIterable<AgentStreamEvent> {
     let content = "";
     const toolCalls: ToolCallRecord[] = [];
     const messages: ModelMessage[] = [];
+    let usage: TokenUsage | undefined;
 
     for await (const event of this.generator) {
       events.push(event);
@@ -117,10 +128,17 @@ export class AgentStream implements AsyncIterable<AgentStreamEvent> {
 
       if (event.type === "model_call_end") {
         messages.push(event.message);
+        if (event.usage) {
+          usage = usage
+            ? addTokenUsage(usage, event.usage)
+            : { ...event.usage };
+        }
       }
     }
 
-    return { content, messages, toolCalls, events };
+    return usage
+      ? { content, messages, toolCalls, events, usage }
+      : { content, messages, toolCalls, events };
   }
 
   /**
@@ -146,4 +164,29 @@ export class AgentStream implements AsyncIterable<AgentStreamEvent> {
       }
     })();
   }
+}
+
+function addTokenUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
+  const usage: TokenUsage = {
+    promptTokens: left.promptTokens + right.promptTokens,
+    completionTokens: left.completionTokens + right.completionTokens,
+    totalTokens: left.totalTokens + right.totalTokens,
+  };
+
+  if (
+    left.cacheReadTokens !== undefined ||
+    right.cacheReadTokens !== undefined
+  ) {
+    usage.cacheReadTokens =
+      (left.cacheReadTokens ?? 0) + (right.cacheReadTokens ?? 0);
+  }
+  if (
+    left.cacheWriteTokens !== undefined ||
+    right.cacheWriteTokens !== undefined
+  ) {
+    usage.cacheWriteTokens =
+      (left.cacheWriteTokens ?? 0) + (right.cacheWriteTokens ?? 0);
+  }
+
+  return usage;
 }

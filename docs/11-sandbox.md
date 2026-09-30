@@ -9,7 +9,7 @@
 
 ## 实现备忘（与本规格的偏差）
 
-实际落地时有三处与早期 spec 文本不同，记录在此：
+实际落地时有四处与早期 spec 文本不同，记录在此：
 
 1. **Shell 命令解析**：spec 示例里把 `input.command` 用 `split(/\s+/)` 拆成
    `cmd + args` 直接执行，会破坏引号、管道、重定向。实现里 `shell` 工具
@@ -24,6 +24,11 @@
 3. **超时不抛异常**：spec 没明说，但实现选择把 execa 的 `timedOut` 投射
    到 `SandboxResult.timedOut` 字段返回，不 throw —— 跟 Phase-3 acceptance
    "工具超时正确处理" 对齐。
+
+4. **中断贯穿子进程**：`SandboxCommand.signal` 会作为 execa 的
+   `cancelSignal` 传给 Local/Docker runner；`shell` tool 会转发
+   `ToolContext.signal`。因此 Agent interrupt 会终止正在运行的 host 或 docker
+   子进程，而不是等到 timeout。
 
 ## 与内置 `bashTool` 的关系
 
@@ -84,6 +89,9 @@ export interface SandboxCommand {
 
   /** 标准输入 */
   stdin?: string;
+
+  /** 中断运行中的子进程 */
+  signal?: AbortSignal;
 }
 
 export interface SandboxResult {

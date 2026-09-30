@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import { AgentStream } from "../src/stream.js";
 import type { AgentStreamEvent } from "../src/stream.js";
 
-function createMockGenerator(events: AgentStreamEvent[]): AsyncGenerator<AgentStreamEvent> {
+function createMockGenerator(
+  events: AgentStreamEvent[],
+): AsyncGenerator<AgentStreamEvent> {
   return (async function* () {
     for (const event of events) {
       yield event;
@@ -30,6 +32,41 @@ describe("AgentStream", () => {
     expect(result.content).toBe("Hello World");
     expect(result.events).toHaveLength(6);
     expect(result.messages).toHaveLength(1);
+  });
+
+  it("accumulates usage from every completed model call", async () => {
+    const events: AgentStreamEvent[] = [
+      {
+        type: "model_call_end",
+        message: { role: "assistant", content: "tool call" },
+        usage: {
+          promptTokens: 10,
+          completionTokens: 2,
+          totalTokens: 12,
+          cacheReadTokens: 4,
+        },
+      },
+      {
+        type: "model_call_end",
+        message: { role: "assistant", content: "final" },
+        usage: {
+          promptTokens: 20,
+          completionTokens: 5,
+          totalTokens: 25,
+          cacheWriteTokens: 3,
+        },
+      },
+    ];
+
+    const result = await new AgentStream(createMockGenerator(events)).collect();
+
+    expect(result.usage).toEqual({
+      promptTokens: 30,
+      completionTokens: 7,
+      totalTokens: 37,
+      cacheReadTokens: 4,
+      cacheWriteTokens: 3,
+    });
   });
 
   it("should yield only text via text() helper", async () => {

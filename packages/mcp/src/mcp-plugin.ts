@@ -16,11 +16,19 @@ import type { MCPServerConfig } from "./mcp-config.js";
 import {
   MCPClientManager,
   type MCPClientFactory,
+  type MCPClientManagerOptions,
 } from "./mcp-client-manager.js";
 
 export interface MCPPluginOptions {
   /** Inject a custom client factory (mainly for tests). */
   factory?: MCPClientFactory;
+  /** Abort a pending server handshake/tool discovery. */
+  signal?: AbortSignal;
+  connectTimeoutMs?: number;
+  listToolsTimeoutMs?: number;
+  toolCallTimeoutMs?: number;
+  closeTimeoutMs?: number;
+  onClientInvalidated?: (serverName: string, reason: unknown) => void;
 }
 
 export class MCPPlugin implements WallePlugin {
@@ -33,15 +41,28 @@ export class MCPPlugin implements WallePlugin {
     private readonly configs: MCPServerConfig[],
     options: MCPPluginOptions = {},
   ) {
-    this.manager = new MCPClientManager(this.configs, options.factory);
+    const managerOptions: MCPClientManagerOptions = {
+      signal: options.signal,
+      connectTimeoutMs: options.connectTimeoutMs,
+      listToolsTimeoutMs: options.listToolsTimeoutMs,
+      toolCallTimeoutMs: options.toolCallTimeoutMs,
+      closeTimeoutMs: options.closeTimeoutMs,
+      onClientInvalidated: options.onClientInvalidated,
+    };
+    this.manager = new MCPClientManager(this.configs, options.factory, managerOptions);
   }
 
   async install(ctx: AgentContext): Promise<void> {
-    await this.manager.connectAll();
+    try {
+      await this.manager.connectAll();
 
-    const tools = await this.manager.listTools();
-    for (const tool of tools) {
-      ctx.registerTool(tool);
+      const tools = await this.manager.listTools();
+      for (const tool of tools) {
+        ctx.registerTool(tool);
+      }
+    } catch (error) {
+      await this.manager.disconnectAll();
+      throw error;
     }
 
     // Expose the manager so other plugins can reach it (e.g. a future

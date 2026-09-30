@@ -5,6 +5,7 @@
 import * as path from "node:path";
 import type {
   AgentContext,
+  ContentBlock,
   ContextItem,
   ModelMessage,
   WallePlugin,
@@ -23,6 +24,42 @@ import type { MemoryPluginConfig, EvictedToolResult } from "./memory-types.js";
 
 const DEFAULT_ROOT = "./.walle";
 let warnedAboutLegacy = false;
+
+/**
+ * Image bytes are request-scoped input, not durable conversation history.
+ * Keep safe text blocks (including PromptBuilder's attachment trace/path) and
+ * remote URL images, but remove embedded base64 recursively before JSONL I/O.
+ */
+function contentBlocksForDisk(blocks: ContentBlock[]): ContentBlock[] {
+  let changed = false;
+  const prepared: ContentBlock[] = [];
+
+  for (const block of blocks) {
+    if (block.type === "image" && block.source.type === "base64") {
+      changed = true;
+      continue;
+    }
+
+    if (block.type === "tool_result" && Array.isArray(block.content)) {
+      const nested = contentBlocksForDisk(block.content);
+      if (nested !== block.content) {
+        changed = true;
+        prepared.push({ ...block, content: nested });
+        continue;
+      }
+    }
+
+    prepared.push(block);
+  }
+
+  return changed ? prepared : blocks;
+}
+
+function messageWithoutEmbeddedImageBytes(message: ModelMessage): ModelMessage {
+  if (!Array.isArray(message.content)) return message;
+  const content = contentBlocksForDisk(message.content);
+  return content === message.content ? message : { ...message, content };
+}
 
 interface RunState {
   sessionId?: string;
@@ -71,8 +108,10 @@ export class MemoryPlugin implements WallePlugin {
       dir: next?.dir ?? legacy?.dir,
       thresholdChars: next?.thresholdChars ?? legacy?.thresholdChars ?? 0,
       keepRecentTurns: next?.keepRecentTurns ?? 3,
-      previewHeadLines: next?.previewHeadLines ?? legacy?.previewHeadLines ?? 10,
-      previewTailLines: next?.previewTailLines ?? legacy?.previewTailLines ?? 10,
+      previewHeadLines:
+        next?.previewHeadLines ?? legacy?.previewHeadLines ?? 10,
+      previewTailLines:
+        next?.previewTailLines ?? legacy?.previewTailLines ?? 10,
     };
 
     this.sessionsEnabled = config.sessions?.enabled ?? true;
@@ -98,7 +137,9 @@ export class MemoryPlugin implements WallePlugin {
     }
 
     if (this.longTermEnabled) {
-      const filePath = config.longTerm?.filePath ?? path.join(root, "memory", "memories.jsonl");
+      const filePath =
+        config.longTerm?.filePath ??
+        path.join(root, "memory", "memories.jsonl");
       this.manager = new MemoryManager({
         filePath,
         dedupThreshold: config.longTerm?.dedupThreshold,
@@ -137,7 +178,12 @@ export class MemoryPlugin implements WallePlugin {
           content: input.content,
         };
         const state = this.runs.get(runId)!;
-        await this.sessionLog.appendMessage(sessionId, runId, state.turn++, userMessage);
+        await this.sessionLog.appendMessage(
+          sessionId,
+          runId,
+          state.turn++,
+          await this.prepareMessageForDisk(userMessage),
+        );
         state.userLogged = true;
       }
     });
@@ -148,7 +194,12 @@ export class MemoryPlugin implements WallePlugin {
       const state = this.runs.get(runId)!;
 
       if (this.sessionsEnabled && this.sessionLog && state.sessionId) {
-        await this.sessionLog.appendMessage(state.sessionId, runId, state.turn++, message);
+        await this.sessionLog.appendMessage(
+          state.sessionId,
+          runId,
+          state.turn++,
+          await this.prepareMessageForDisk(message),
+        );
       }
     });
 
@@ -163,7 +214,11 @@ export class MemoryPlugin implements WallePlugin {
 
       let contentForDisk: string = raw;
 
-      if (this.toolResultsEnabled && this.vault && this.vault.shouldEvict(raw)) {
+      if (
+        this.toolResultsEnabled &&
+        this.vault &&
+        this.vault.shouldEvict(raw)
+      ) {
         const envelope = await this.vault.evict({
           toolCallId: record.id,
           toolName: record.name,
@@ -180,7 +235,12 @@ export class MemoryPlugin implements WallePlugin {
           toolCallId: record.id,
           content: contentForDisk,
         };
-        await this.sessionLog.appendMessage(state.sessionId, runId, state.turn++, toolMessage);
+        await this.sessionLog.appendMessage(
+          state.sessionId,
+          runId,
+          state.turn++,
+          toolMessage,
+        );
       }
     });
 
@@ -219,7 +279,9 @@ export class MemoryPlugin implements WallePlugin {
       // for that run's evicted tool results; all other evicted messages get summarized.
       const lastRun = await this.sessionLog.lastRun(sessionId, currentRunId);
       const lastCancelledRunId =
-        lastRun && lastRun.status === "user-cancelled" ? lastRun.runId : undefined;
+        lastRun && lastRun.status === "user-cancelled"
+          ? lastRun.runId
+          : undefined;
 
       for (const rec of records) {
         if (rec.runId === currentRunId) continue;
@@ -240,9 +302,33 @@ export class MemoryPlugin implements WallePlugin {
       }
     });
 
+    // Macro compaction replaces the historical head in memory. Mirror that
+    // exact conversation snapshot on disk so the next run cannot resurrect
+    // the pre-compaction JSONL history. System/context messages are assembled
+    // afresh by PromptBuilder and have never been part of SessionLog.
+    ctx.events.on("compaction_done", async ({ runId, sessionId, messages }) => {
+      if (!this.sessionsEnabled || !this.sessionLog || !sessionId) return;
+
+      const conversation: ModelMessage[] = [];
+      for (const message of messages) {
+        if (message.role === "system") continue;
+        conversation.push(await this.prepareMessageForDisk(message));
+      }
+
+      await this.sessionLog.replaceMessages(sessionId, runId, conversation);
+
+      // Live auto-compaction happens inside an active run. Replacement
+      // renumbers the compacted snapshot, so future assistant/tool hooks
+      // must append after it rather than reusing an earlier turn index.
+      const state = this.runs.get(runId);
+      if (state?.sessionId === sessionId) state.turn = conversation.length;
+    });
+
     ctx.events.on("collect_context", async ({ query, items }) => {
       if (!this.longTermEnabled || !this.manager) return;
-      const memories = await this.manager.retrieve(query, { longTopK: this.topK });
+      const memories = await this.manager.retrieve(query, {
+        longTopK: this.topK,
+      });
       for (const mem of memories) {
         const item: ContextItem = {
           source: "memory",
@@ -288,7 +374,10 @@ export class MemoryPlugin implements WallePlugin {
         // Live content — only rewrite when we have an evictable size.
         const raw = typeof msg.content === "string" ? msg.content : "";
         if (!raw) continue;
-        if (this.vault.thresholdChars > 0 && raw.length <= this.vault.thresholdChars) {
+        if (
+          this.vault.thresholdChars > 0 &&
+          raw.length <= this.vault.thresholdChars
+        ) {
           continue;
         }
         const toolCallId = msg.toolCallId;
@@ -371,6 +460,46 @@ export class MemoryPlugin implements WallePlugin {
     let last: string | undefined;
     for (const id of this.runs.keys()) last = id;
     return last;
+  }
+
+  /**
+   * Apply every on-disk message invariant through one path: embedded image
+   * bytes stay transient, while oversized tool results remain vaulted.
+   */
+  private async prepareMessageForDisk(
+    message: ModelMessage,
+  ): Promise<ModelMessage> {
+    const prepared = messageWithoutEmbeddedImageBytes(message);
+    if (
+      prepared.role !== "tool" ||
+      !this.toolResultsEnabled ||
+      !this.vault ||
+      isPlaceholder(prepared.content) ||
+      tryDecodeEviction(prepared.content)
+    ) {
+      return prepared;
+    }
+
+    const raw = typeof prepared.content === "string" ? prepared.content : "";
+    if (!raw || !this.vault.shouldEvict(raw) || !prepared.toolCallId) {
+      return prepared;
+    }
+
+    const ensured = await this.vault.ensure({
+      toolCallId: prepared.toolCallId,
+      toolName:
+        (prepared.metadata?.toolName as string | undefined) ?? "unknown",
+      content: raw,
+      status: prepared.metadata?.status as
+        | "success"
+        | "error"
+        | "denied"
+        | "timeout"
+        | undefined,
+    });
+    const { idx: _idx, ...envelope } = ensured;
+    void _idx;
+    return { ...prepared, content: JSON.stringify(envelope) };
   }
 
   private serializeToolOutput(output: unknown): string {

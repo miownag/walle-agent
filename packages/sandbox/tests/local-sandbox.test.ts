@@ -80,6 +80,14 @@ describe("LocalSandbox.run", () => {
     expect(calls[0].options.timeout).toBe(5000);
   });
 
+  it("forwards AbortSignal to the subprocess runner", async () => {
+    const { runner, calls } = fakeRunner();
+    const controller = new AbortController();
+    const sb = new LocalSandbox({ runner });
+    await sb.run({ cmd: "sleep", args: ["10"], signal: controller.signal });
+    expect(calls[0].options.cancelSignal).toBe(controller.signal);
+  });
+
   it("propagates timedOut from runner instead of throwing", async () => {
     const { runner } = fakeRunner({ timedOut: true, exitCode: undefined, stdout: "", stderr: "" });
     const sb = new LocalSandbox({ runner });

@@ -62,6 +62,8 @@ export interface EvolutionContext {
   runId: string;
   sessionId?: string;
   messages: ModelMessage[];
+  /** Cancels background review work during Agent/plugin disposal. */
+  signal?: AbortSignal;
 }
 
 export interface ProposalStore {

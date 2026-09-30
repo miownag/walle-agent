@@ -35,6 +35,9 @@ export class EvolutionPlugin implements WallePlugin {
   engine?: EvolutionEngine;
 
   private turnCounter = 0;
+  private readonly lifetime = new AbortController();
+  private readonly jobs = new Set<Promise<void>>();
+  private disposed = false;
 
   constructor(private readonly config: EvolutionPluginConfig = {}) {
     const root = config.rootDir ?? DEFAULT_ROOT;
@@ -62,15 +65,24 @@ export class EvolutionPlugin implements WallePlugin {
     });
 
     ctx.registerHook("onRunEnd", async (payload) => {
+      if (this.disposed) return;
       this.turnCounter += 1;
       const messages = payload.messages ?? [];
       // Run evolution out-of-band so it does not delay the user-visible response.
-      // Fire-and-forget; errors are swallowed inside the engine.
-      void this.engine!.afterRun({
-        turnCounter: this.turnCounter,
-        runId: payload.runId,
-        sessionId: payload.sessionId,
-        messages: copyMessages(messages),
+      // Jobs are tracked so dispose can abort and await them before a desktop
+      // thread removes its runtime directory.
+      void this.track(
+        this.engine!.afterRun({
+          turnCounter: this.turnCounter,
+          runId: payload.runId,
+          sessionId: payload.sessionId,
+          messages: copyMessages(messages),
+          signal: this.lifetime.signal,
+        }),
+      ).catch((error: unknown) => {
+        if (this.lifetime.signal.aborted || isAbortError(error)) return;
+        // eslint-disable-next-line no-console
+        console.error("[EvolutionPlugin] background review failed:", error);
       });
     });
   }
@@ -101,17 +113,39 @@ export class EvolutionPlugin implements WallePlugin {
   /** Force-run evolution for the given messages. Useful for testing / CLIs. */
   async runEvolution(runId: string, sessionId: string | undefined, messages: ModelMessage[]): Promise<void> {
     if (!this.engine) throw new Error("EvolutionPlugin not installed yet");
+    if (this.disposed) throw new Error("EvolutionPlugin has been disposed");
     this.turnCounter += 1;
-    await this.engine.afterRun({
+    await this.track(this.engine.afterRun({
       turnCounter: this.turnCounter,
       runId,
       sessionId,
       messages: copyMessages(messages),
-    });
+      signal: this.lifetime.signal,
+    }));
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.lifetime.abort(new DOMException("Evolution plugin disposed", "AbortError"));
+    await Promise.allSettled([...this.jobs]);
+  }
+
+  private track(job: Promise<void>): Promise<void> {
+    this.jobs.add(job);
+    void job.then(
+      () => this.jobs.delete(job),
+      () => this.jobs.delete(job),
+    );
+    return job;
   }
 }
 
 function copyMessages(messages: ModelMessage[]): ModelMessage[] {
   // Shallow copy — evolution only reads.
   return messages.slice();
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }

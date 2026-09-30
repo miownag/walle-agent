@@ -125,6 +125,7 @@ export type AgentStreamEvent =
   | ModelCallStartEvent
   | ModelCallEndEvent
   | TextDeltaEvent
+  | ThinkingDeltaEvent
   | ToolCallDeltaEvent
   | ToolCallStartEvent
   | ToolCallEndEvent
@@ -152,6 +153,11 @@ export interface ModelCallEndEvent {
 
 export interface TextDeltaEvent {
   type: "text_delta";
+  content: string;
+}
+
+export interface ThinkingDeltaEvent {
+  type: "thinking_delta";
   content: string;
 }
 
@@ -202,10 +208,17 @@ export interface LLMProvider {
 
 export type LLMStreamChunk =
   | { type: "text_delta"; content: string }
+  | { type: "thinking_delta"; content: string }
   | { type: "tool_call_delta"; toolCallId: string; name?: string; argumentsDelta?: string }
   | { type: "message_complete"; message: ModelMessage; toolCalls?: ModelToolCall[]; usage?: TokenUsage }
   | { type: "error"; error: Error };
 ```
+
+Runtime 对 provider 的每个 chunk 始终先原样发出一个 `llm_chunk`。当 chunk 为
+`thinking_delta` 时，紧接着额外镜像且只镜像一次一等
+`{ type: "thinking_delta", content }` 事件；`text_delta` 与
+`tool_call_delta` 同理保留各自的一等事件。这让 UI 可以直接构建可折叠思考区，
+同时底层消费者仍能观察完整 provider chunk。
 
 ---
 

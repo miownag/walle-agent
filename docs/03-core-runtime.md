@@ -70,6 +70,9 @@ export interface AgentConfig {
   /** 系统提示词 */
   systemPrompt?: string;
 
+  /** 内置文件系统工具的可选工作区边界；省略时沿用 process.cwd() */
+  workspaceRoot?: string;
+
   /** 原生工具 */
   tools?: Tool[];
 
@@ -94,6 +97,13 @@ export interface AgentConfig {
 }
 ```
 
+`workspaceRoot` 会原样进入 `ResolvedAgentConfig`。当它存在时，
+`AgentRuntime` 为当前 Agent 单独调用 `createFilesystemTools({ workspaceRoot })`，
+而不是注册模块级文件工具；`ls` / `read_file` / `write_file` / `edit_file` /
+`glob` / `grep` 的相对路径均以该目录为基准。未设置时继续注册公开的模块级
+tools，保持历史 `process.cwd()` 行为。动态 `task` 子 Agent 继承父 Agent 的
+`workspaceRoot`，不会意外回退到进程工作目录。
+
 ---
 
 ## AgentInput / AgentResult
@@ -116,6 +126,16 @@ export interface AgentResult {
   metadata?: Record<string, unknown>;
 }
 ```
+
+`PromptBuilder` 只把 `attachments` 合并到本次新建的 `role: "user"` 消息，不修改 system/history：
+
+- `image`：要求合法 `image/*` MIME；`Buffer` 编码成 base64，string 按 base64 校验并规范化，然后生成 `ImageBlock.source.type = "base64"`。
+- `url`：只接受 HTTP(S)，生成 URL `ImageBlock`，不在 core 内抓取资源。
+- `file`：当前仅生成带 name/MIME/path 的文本描述，不读取本地文件。
+- 每个附件会先追加一个不含 image base64 的可追踪文本 block；若原始 `content` 已是 `ContentBlock[]`，保留原 blocks 并在末尾追加附件 blocks。
+- 非法 MIME、base64、URL scheme 或 file data 会同步抛出带 attachment index 的 `TypeError`，不会静默丢附件或构造畸形 provider 请求。
+
+Memory 的 `onRunStart` 仍只持久化原始 `input.content`；图片 bytes 是当前请求的 transient payload，不进入 `messages.jsonl`。
 
 ---
 
@@ -153,25 +173,33 @@ export class AgentRuntime {
   }
 
   async init(): Promise<void> {
-    // 1. 注册原生工具
+    // 1. 注册 built-ins；workspaceRoot 存在时文件工具由 factory 单独构造
+    this.registerBuiltinTools();
+
+    // 2. 注册原生工具（同名时覆盖 built-in）
     for (const tool of this.config.tools ?? []) {
       this.toolRegistry.register(tool);
     }
 
-    // 2. 注册快捷 hooks
+    // 3. 注册快捷 hooks
     if (this.config.hooks) {
       this.hookManager.registerAll(this.config.hooks);
     }
 
-    // 3. 注册快捷 middleware
+    // 4. 注册快捷 middleware
     for (const mw of this.config.middleware ?? []) {
       this.middlewarePipeline.use(mw);
     }
 
-    // 4. 安装插件（顺序执行）
+    // 5. 安装插件（顺序执行）
     for (const plugin of this.config.plugins ?? []) {
       await plugin.install(this.pluginContext);
     }
+
+    // 6. 构造需要 per-Agent 状态的 task / web_fetch / tool-search helpers
+    this.registerTaskTool();
+    this.registerWebFetchTool();
+    this.applyToolSearchPolicy();
 
     await this.hookManager.emit("onInit", this.pluginContext);
   }
@@ -252,6 +280,10 @@ export class AgentRuntime {
 
         if (chunk.type === "text_delta") {
           yield { type: "text_delta", content: chunk.content };
+        }
+
+        if (chunk.type === "thinking_delta") {
+          yield { type: "thinking_delta", content: chunk.content };
         }
 
         if (chunk.type === "tool_call_delta") {
@@ -408,6 +440,22 @@ export type AgentEventMap = {
    * 当前 user input 之前。
    */
   collect_messages: { sessionId?: string; into: ModelMessage[] };
+  /** 每个 turn 顶部的可变 micro-compaction pass。 */
+  compact_messages: {
+    messages: ModelMessage[];
+    keepRecentTurns: number;
+    runId: string;
+    sessionId?: string;
+  };
+  /** 成功 macro-compaction 的只读结果快照，供 Memory 原子持久化。 */
+  compaction_done: {
+    runId: string;
+    sessionId?: string;
+    before: number;
+    after: number;
+    summary: string;
+    messages: ReadonlyArray<ModelMessage>;
+  };
   /** 让插件注入 context items（snippet 形式，放进 system prompt 的 `<context>` 段）。 */
   collect_context: { query: string; items: ContextItem[] };
   memory_write: { item: any };

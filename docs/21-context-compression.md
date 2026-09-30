@@ -60,9 +60,10 @@ Agent 在一个 run 里做多步工具调用时，messages 数组只增不减。
 
 ```ts
 await this.eventBus.emit("compact_messages", {
-  messages,              // ModelMessage[] — in-place mutable
+  messages, // ModelMessage[] — in-place mutable
   keepRecentTurns: 3,
-  runId, sessionId,
+  runId,
+  sessionId,
 });
 ```
 
@@ -87,12 +88,12 @@ Use read_tool_result(toolCallId="<id>") or read_file(path="<abs path>") to load 
 
 ### `read_tool_result` 内置工具
 
-| 项 | 值 |
-|---|---|
-| 名称 | `read_tool_result` |
-| 入参 | `{ toolCallId: string; offset?: number; limit?: number }` |
+| 项   | 值                                                                                 |
+| ---- | ---------------------------------------------------------------------------------- |
+| 名称 | `read_tool_result`                                                                 |
+| 入参 | `{ toolCallId: string; offset?: number; limit?: number }`                          |
 | 输出 | `{ content: string; totalLines: number; truncated: boolean } \| { error: string }` |
-| Risk | `low` |
+| Risk | `low`                                                                              |
 
 实现层 emit `vault_read` 事件，由 `MemoryPlugin` 调 `vault.readSlice(...)` 写回 `payload.result.value`。Memory 未装时返回 `{ error: "tool result vault not available — install @walle-agent/memory" }`。
 
@@ -191,13 +192,16 @@ class Agent {
 
 ### 持久化
 
-- `<sessionDir>/summaries/<runId>-<ts>.md` —— 摘要正文。
-- `<sessionDir>/runs.jsonl` —— append 一行：
-  ```json
-  { "runId":"r-…", "kind":"compaction", "path":"…/summaries/…", "beforeMsgCount":42, "afterMsgCount":7, "ts":"…" }
-  ```
-- `messages.jsonl` 不删除（保留证据）。
-- 下次 `collect_messages` 时，`MemoryPlugin` 检测最近一条 `compaction` 记录，按规则把该 run 之前的消息丢弃，插入摘要。
+成功的 macro pass 在 `compaction_done` 中携带压缩后的完整 `messages` 快照。`MemoryPlugin` 去掉每次 run 都会重建的 system/context 消息，并把 conversation 部分（summary + protected tail）交给 `SessionLog.replaceMessages(...)`。
+
+替换与普通 append/read 共用 per-session 写队列：先在 session 目录写完整临时 JSONL、`fsync`，再用同文件系统 `rename` 原子覆盖 `messages.jsonl`。因此：
+
+- 下一次 `collect_messages` 直接读到 summary + tail，不会从旧 JSONL 复活被压缩的 head。
+- live auto compact 完成后，本 run 后续 assistant/tool 消息继续 append 在新快照之后。
+- summary model 失败时不会 emit `compaction_done`，所以不写持久层。
+- 临时文件写入或 rename 失败时旧 `messages.jsonl` 保持不变；失败不会 poison 后续 session 写队列，也不会产生 unhandled rejection。
+- tool tail 仍遵守 `ToolResultVault` envelope 规则，不会因为整文件替换而把超大 raw output 塞回 JSONL。
+- manual 与 live auto compaction 共用 MemoryPlugin 的 on-disk message 净化：protected tail 中内嵌 `ImageBlock` 的 base64 字节会在 `replaceMessages` 前递归移除，安全的附件 trace/路径文字继续保留。图片字节因此只属于当前请求，不会因压缩而进入 session JSONL，也不会在重启后的下一轮被再次发送。
 
 ---
 
@@ -219,11 +223,11 @@ Macro 仅在估算超阈值或手动调用时跑（一次额外 LLM 调用）。
 
 ## 事件清单
 
-| 事件 | 时机 | Payload |
-|---|---|---|
-| `compact_messages` | 每个 turn 顶部 | `{ messages, keepRecentTurns, runId, sessionId? }`（`messages` mutable） |
-| `vault_read` | `read_tool_result` 调用 | `{ toolCallId, offset, limit, result: { value? } }` |
-| `compaction_done` | macro 完成后 | `{ runId, sessionId?, before, after, summary }` |
+| 事件               | 时机                    | Payload                                                                                           |
+| ------------------ | ----------------------- | ------------------------------------------------------------------------------------------------- |
+| `compact_messages` | 每个 turn 顶部          | `{ messages, keepRecentTurns, runId, sessionId? }`（`messages` mutable）                          |
+| `vault_read`       | `read_tool_result` 调用 | `{ toolCallId, offset, limit, result: { value? } }`                                               |
+| `compaction_done`  | macro 完成后            | `{ runId, sessionId?, before, after, summary, messages }`；`messages` 是 post-compaction snapshot |
 
 ---
 
@@ -249,14 +253,14 @@ export type { MacroCompressionConfig } from "./agent-config.js";
 
 ## 边界 & 兼容
 
-| Case | 行为 |
-|---|---|
-| 前 1–3 turn | `partitionByTurns` 返回空 `evictableIndices` → no-op。 |
-| 已逐出消息 | 重渲染 placeholder 即可；不重复落盘。 |
-| Memory 插件未装 | `compact_messages` 无监听 → messages 不变；`read_tool_result` 返回 `{ error }`。 |
-| Macro 在 run 中 | `agent.compact()` 抛错；自动触发只在 turn 之间。 |
-| 已有 summary user 消息 | 被识别并替换，不堆叠。 |
-| Summary 模型调用失败 | 一行 warn，跳过 macro，run 继续。 |
+| Case                   | 行为                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| 前 1–3 turn            | `partitionByTurns` 返回空 `evictableIndices` → no-op。                           |
+| 已逐出消息             | 重渲染 placeholder 即可；不重复落盘。                                            |
+| Memory 插件未装        | `compact_messages` 无监听 → messages 不变；`read_tool_result` 返回 `{ error }`。 |
+| Macro 在 run 中        | `agent.compact()` 抛错；自动触发只在 turn 之间。                                 |
+| 已有 summary user 消息 | 被识别并替换，不堆叠。                                                           |
+| Summary 模型调用失败   | 一行 warn，跳过 macro，run 继续。                                                |
 
 ---
 

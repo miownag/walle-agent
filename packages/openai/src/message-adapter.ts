@@ -16,12 +16,22 @@ import type {
 import type OpenAI from "openai";
 
 type ChatCompletionMessageParam = OpenAI.ChatCompletionMessageParam;
+type ChatCompletionContentPart = OpenAI.ChatCompletionContentPart;
 type ChatCompletionTool = OpenAI.ChatCompletionTool;
 type ChatCompletion = OpenAI.ChatCompletion;
 
+const SUPPORTED_IMAGE_MEDIA_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
 // ─── Internal → OpenAI ─────────────────────────────────────────────
 
-export function toOpenAIMessages(messages: ModelMessage[]): ChatCompletionMessageParam[] {
+export function toOpenAIMessages(
+  messages: ModelMessage[],
+): ChatCompletionMessageParam[] {
   return messages.map((msg) => {
     switch (msg.role) {
       case "system":
@@ -33,7 +43,7 @@ export function toOpenAIMessages(messages: ModelMessage[]): ChatCompletionMessag
       case "user":
         return {
           role: "user" as const,
-          content: contentToString(msg.content),
+          content: userContentToOpenAI(msg.content),
         };
 
       case "assistant": {
@@ -112,7 +122,9 @@ export function fromOpenAIResponse(response: ChatCompletion): LLMChatResponse {
 
   let content: string | ContentBlock[] | undefined;
   if (reasoningContent) {
-    const blocks: ContentBlock[] = [{ type: "thinking", thinking: reasoningContent }];
+    const blocks: ContentBlock[] = [
+      { type: "thinking", thinking: reasoningContent },
+    ];
     if (textContent) blocks.push({ type: "text", text: textContent });
     content = blocks;
   } else {
@@ -130,6 +142,12 @@ export function fromOpenAIResponse(response: ChatCompletion): LLMChatResponse {
         promptTokens: response.usage.prompt_tokens,
         completionTokens: response.usage.completion_tokens,
         totalTokens: response.usage.total_tokens,
+        ...(response.usage.prompt_tokens_details?.cached_tokens !== undefined
+          ? {
+              cacheReadTokens:
+                response.usage.prompt_tokens_details.cached_tokens,
+            }
+          : {}),
       }
     : undefined;
 
@@ -147,8 +165,27 @@ export async function* transformOpenAIStream(
     number,
     { id: string; name: string; arguments: string }
   >();
+  let completedMessage:
+    | { message: ModelMessage; toolCalls?: ModelToolCall[] }
+    | undefined;
+  let usage: TokenUsage | undefined;
 
   for await (const chunk of stream) {
+    // With `stream_options.include_usage`, OpenAI sends usage in a final chunk
+    // whose choices array is empty. Capture it before looking up the choice and
+    // defer `message_complete` until the source stream ends so callers receive
+    // exactly one completion event containing the usage.
+    if (chunk.usage) {
+      usage = {
+        promptTokens: chunk.usage.prompt_tokens,
+        completionTokens: chunk.usage.completion_tokens,
+        totalTokens: chunk.usage.total_tokens,
+        ...(chunk.usage.prompt_tokens_details?.cached_tokens !== undefined
+          ? { cacheReadTokens: chunk.usage.prompt_tokens_details.cached_tokens }
+          : {}),
+      };
+    }
+
     const choice = chunk.choices[0];
     if (!choice) continue;
 
@@ -194,18 +231,22 @@ export async function* transformOpenAIStream(
 
     // Finish reason
     if (choice.finish_reason) {
-      const toolCalls: ModelToolCall[] = [...toolCallAccumulators.values()].map((acc) => ({
-        id: acc.id,
-        name: acc.name,
-        arguments: JSON.parse(acc.arguments || "{}"),
-      }));
+      const toolCalls: ModelToolCall[] = [...toolCallAccumulators.values()].map(
+        (acc) => ({
+          id: acc.id,
+          name: acc.name,
+          arguments: JSON.parse(acc.arguments || "{}"),
+        }),
+      );
 
       const text = contentParts.join("");
       const thinking = thinkingParts.join("");
 
       let content: string | ContentBlock[] | undefined;
       if (thinking) {
-        const blocks: ContentBlock[] = [{ type: "thinking", thinking } satisfies ThinkingBlock];
+        const blocks: ContentBlock[] = [
+          { type: "thinking", thinking } satisfies ThinkingBlock,
+        ];
         if (text) blocks.push({ type: "text", text } satisfies TextBlock);
         content = blocks;
       } else {
@@ -218,21 +259,19 @@ export async function* transformOpenAIStream(
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       };
 
-      const usage: TokenUsage | undefined = chunk.usage
-        ? {
-            promptTokens: chunk.usage.prompt_tokens,
-            completionTokens: chunk.usage.completion_tokens,
-            totalTokens: chunk.usage.total_tokens,
-          }
-        : undefined;
-
-      yield {
-        type: "message_complete",
+      completedMessage = {
         message,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        usage,
       };
     }
+  }
+
+  if (completedMessage) {
+    yield {
+      type: "message_complete",
+      ...completedMessage,
+      usage,
+    };
   }
 }
 
@@ -247,8 +286,120 @@ function contentToString(content: string | ContentBlock[] | undefined): string {
     .join("");
 }
 
+function userContentToOpenAI(
+  content: string | ContentBlock[] | undefined,
+): string | ChatCompletionContentPart[] {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+
+  const parts: ChatCompletionContentPart[] = [];
+  let hasImage = false;
+
+  for (const [index, block] of content.entries()) {
+    if (block.type === "text") {
+      if (block.text) parts.push({ type: "text", text: block.text });
+      continue;
+    }
+    if (block.type !== "image") continue;
+
+    hasImage = true;
+    const source = block.source;
+    if (source.type === "base64") {
+      assertSupportedMediaType(source.mediaType, index, "OpenAI");
+      assertValidBase64(source.data, index, "OpenAI");
+      parts.push({
+        type: "image_url",
+        image_url: {
+          url: `data:${source.mediaType};base64,${source.data}`,
+        },
+      });
+      continue;
+    }
+
+    if (source.type !== "url") {
+      throw new TypeError(
+        `OpenAI user image at content block ${index} has invalid source type`,
+      );
+    }
+    assertValidImageUrl(source.url, index, "OpenAI");
+    parts.push({
+      type: "image_url",
+      image_url: { url: source.url },
+    });
+  }
+
+  // Keep the previous string representation for text-only user content.
+  return hasImage ? parts : contentToString(content);
+}
+
+function assertSupportedMediaType(
+  mediaType: string,
+  index: number,
+  provider: string,
+): void {
+  if (!SUPPORTED_IMAGE_MEDIA_TYPES.has(mediaType)) {
+    throw new TypeError(
+      `${provider} user image at content block ${index} has unsupported media type`,
+    );
+  }
+}
+
+function assertValidBase64(
+  data: string,
+  index: number,
+  provider: string,
+): void {
+  const paddingIndex = typeof data === "string" ? data.indexOf("=") : -1;
+  const unpadded = paddingIndex === -1 ? data : data.slice(0, paddingIndex);
+  const padding = paddingIndex === -1 ? "" : data.slice(paddingIndex);
+  const valid =
+    typeof data === "string" &&
+    data.length > 0 &&
+    /^[A-Za-z0-9+/]+$/.test(unpadded) &&
+    /^(?:|=|==)$/.test(padding) &&
+    unpadded.length % 4 !== 1 &&
+    (padding.length === 0 || data.length % 4 === 0) &&
+    (padding.length === 0 || unpadded.length % 4 === 4 - padding.length);
+
+  if (!valid) {
+    throw new TypeError(
+      `${provider} user image at content block ${index} has invalid base64 data`,
+    );
+  }
+}
+
+function assertValidImageUrl(
+  value: string,
+  index: number,
+  provider: string,
+): void {
+  let url: URL;
+  try {
+    if (typeof value !== "string" || !value || value !== value.trim()) {
+      throw new Error("invalid URL");
+    }
+    url = new URL(value);
+  } catch {
+    throw new TypeError(
+      `${provider} user image at content block ${index} has invalid URL`,
+    );
+  }
+
+  if (
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
+    url.username ||
+    url.password
+  ) {
+    throw new TypeError(
+      `${provider} user image at content block ${index} must use an HTTP(S) URL without credentials`,
+    );
+  }
+}
+
 function extractThinking(content: string | ContentBlock[] | undefined): string {
   if (!content || typeof content === "string") return "";
-  const thinkingBlocks = content.filter((b): b is ThinkingBlock => b.type === "thinking");
+  const thinkingBlocks = content.filter(
+    (b): b is ThinkingBlock => b.type === "thinking",
+  );
   return thinkingBlocks.map((b) => b.thinking).join("");
 }

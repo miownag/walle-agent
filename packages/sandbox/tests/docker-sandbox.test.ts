@@ -117,6 +117,14 @@ describe("DockerSandbox.run argv", () => {
     expect(res.timedOut).toBe(true);
   });
 
+  it("forwards AbortSignal to the docker subprocess", async () => {
+    const { runner, calls } = fakeRunner();
+    const controller = new AbortController();
+    const sb = new DockerSandbox({ image: "alpine", runner });
+    await sb.run({ cmd: "sleep", args: ["10"], signal: controller.signal });
+    expect(calls[0].options.cancelSignal).toBe(controller.signal);
+  });
+
   it("converts a runner throw to exit 1 + stderr", async () => {
     const runner: SandboxRunner = vi.fn(async () => {
       throw new Error("docker daemon unreachable");

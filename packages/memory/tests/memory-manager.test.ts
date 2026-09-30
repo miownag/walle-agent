@@ -18,7 +18,9 @@ describe("MemoryManager", () => {
   it("creates an item when no near-duplicate exists", async () => {
     const m = new MemoryManager({ filePath: file });
     await m.init();
-    const item = await m.remember({ content: "user prefers typescript over javascript" });
+    const item = await m.remember({
+      content: "user prefers typescript over javascript",
+    });
     expect(item.id).toBeTruthy();
     expect((await m.list()).length).toBe(1);
   });

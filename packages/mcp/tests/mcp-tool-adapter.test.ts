@@ -35,6 +35,18 @@ describe("adaptMCPTool — naming & metadata", () => {
     expect(tool.name).toBe("fs_read_file");
   });
 
+  it("normalizes free-form server/tool names to provider-safe function names", () => {
+    const tool = adaptMCPTool({
+      serverName: "My 服务",
+      client: { callTool: vi.fn() } as MCPClientLike,
+      mcpTool: { name: "read.file/now" },
+      config: cfg(),
+    });
+
+    expect(tool.name).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(tool.name).toBe("mcp_My_read_file_now");
+  });
+
   it("falls back to 'MCP tool from <server>' when description is missing", () => {
     const tool = adaptMCPTool({
       serverName: "demo",
@@ -99,10 +111,11 @@ describe("adaptMCPTool — execute path", () => {
 
     const result = await tool.execute({ path: "./README.md" }, fakeCtx);
 
-    expect(callTool).toHaveBeenCalledWith({
-      name: "do_thing",
-      arguments: { path: "./README.md" },
-    });
+    expect(callTool).toHaveBeenCalledWith(
+      { name: "do_thing", arguments: { path: "./README.md" } },
+      undefined,
+      expect.objectContaining({ timeout: 60_000, maxTotalTimeout: 60_000 }),
+    );
     expect(result).toBe("ok");
   });
 
@@ -182,10 +195,33 @@ describe("adaptMCPTool — execute path", () => {
 
     await tool.execute(undefined as any, fakeCtx);
 
-    expect(callTool).toHaveBeenCalledWith({
-      name: "nullary",
-      arguments: {},
+    expect(callTool).toHaveBeenCalledWith(
+      { name: "nullary", arguments: {} },
+      undefined,
+      expect.objectContaining({ timeout: 60_000 }),
+    );
+  });
+
+  it("aborts a never-resolving call and invalidates its client", async () => {
+    const callTool = vi.fn(() => new Promise(() => undefined));
+    const onUnresponsive = vi.fn().mockResolvedValue(undefined);
+    const tool = adaptMCPTool({
+      serverName: "demo",
+      client: { callTool } as MCPClientLike,
+      mcpTool: { name: "hang" },
+      config: cfg(),
+      callTimeoutMs: 60_000,
+      onUnresponsive,
     });
+    const controller = new AbortController();
+    const pending = tool.execute({}, { agent: {} as any, signal: controller.signal });
+    controller.abort(new DOMException("stopped", "AbortError"));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(onUnresponsive).toHaveBeenCalledTimes(1);
+    const forwarded = callTool.mock.calls[0]?.[2]?.signal;
+    expect(forwarded).toBeInstanceOf(AbortSignal);
+    expect(forwarded?.aborted).toBe(true);
   });
 });
 

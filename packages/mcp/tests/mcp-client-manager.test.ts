@@ -201,6 +201,81 @@ describe("MCPClientManager", () => {
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
   });
+
+  it("aborts a pending handshake and closes its already-created client", async () => {
+    const client = makeFakeClient([]);
+    client.connect = vi.fn(() => new Promise(() => undefined));
+    const controller = new AbortController();
+    const manager = new MCPClientManager(
+      [{ name: "hung", transport: { type: "stdio", command: "noop" } }],
+      makeFactory({ hung: client }),
+      { signal: controller.signal, connectTimeoutMs: 60_000 },
+    );
+    const connecting = manager.connectAll();
+    await vi.waitFor(() => expect(client.connect).toHaveBeenCalledTimes(1));
+    controller.abort(new DOMException("cancel setup", "AbortError"));
+
+    await expect(connecting).rejects.toMatchObject({ name: "AbortError" });
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(manager.serverNames()).toEqual([]);
+  });
+
+  it("times out a pending handshake and closes its client", async () => {
+    const client = makeFakeClient([]);
+    client.connect = vi.fn(() => new Promise(() => undefined));
+    const manager = new MCPClientManager(
+      [{ name: "hung", transport: { type: "stdio", command: "noop" } }],
+      makeFactory({ hung: client }),
+      { connectTimeoutMs: 5 },
+    );
+
+    await expect(manager.connectAll()).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes a client returned by a factory after creation already timed out", async () => {
+    const client = makeFakeClient([]);
+    let finishCreate!: (value: { client: FakeClient; transport: object }) => void;
+    const factory: MCPClientFactory = {
+      create: () => new Promise((resolve) => { finishCreate = resolve; }),
+    };
+    const manager = new MCPClientManager(
+      [{ name: "late", transport: { type: "stdio", command: "noop" } }],
+      factory,
+      { connectTimeoutMs: 5 },
+    );
+    await expect(manager.connectAll()).rejects.toMatchObject({ name: "TimeoutError" });
+
+    finishCreate({ client, transport: {} });
+    await vi.waitFor(() => expect(client.close).toHaveBeenCalledTimes(1));
+  });
+
+  it("times out tool discovery and invalidates the client", async () => {
+    const client = makeFakeClient([]);
+    client.listTools = vi.fn(() => new Promise(() => undefined));
+    const invalidated = vi.fn();
+    const manager = new MCPClientManager(
+      [{ name: "hung", transport: { type: "stdio", command: "noop" } }],
+      makeFactory({ hung: client }),
+      { listToolsTimeoutMs: 5, onClientInvalidated: invalidated },
+    );
+    await manager.connectAll();
+
+    await expect(manager.listTools()).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(invalidated).toHaveBeenCalledWith("hung", expect.any(Error));
+  });
+
+  it("rejects provider-name collisions after normalization", async () => {
+    const client = makeFakeClient([{ name: "a.b" }, { name: "a/b" }]);
+    const manager = new MCPClientManager(
+      [{ name: "demo", transport: { type: "stdio", command: "noop" } }],
+      makeFactory({ demo: client }),
+    );
+    await manager.connectAll();
+
+    await expect(manager.listTools()).rejects.toThrow(/name collision/);
+  });
 });
 
 describe("includeTool helper", () => {

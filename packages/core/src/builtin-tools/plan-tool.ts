@@ -27,11 +27,22 @@ export interface Plan {
 
 // ─── In-memory Store ──────────────────────────────────────────────
 
-const planStore = new Map<string, Plan>();
+export type PlanStore = Map<string, Plan>;
+
+/**
+ * Backward-compatible store used only by the module-level `planTool` export.
+ * AgentRuntime creates a fresh store through `createPlanTool()` for each Agent.
+ */
+const defaultPlanStore: PlanStore = new Map();
 
 // ─── Schema ───────────────────────────────────────────────────────
 
-const stepStatusEnum = z.enum(["pending", "in_progress", "completed", "skipped"]);
+const stepStatusEnum = z.enum([
+  "pending",
+  "in_progress",
+  "completed",
+  "skipped",
+]);
 
 // ─── Input Type (re-exported for downstream callers) ─────────────
 
@@ -47,77 +58,86 @@ export interface PlanToolInput {
 
 // ─── Tool Definition ──────────────────────────────────────────────
 
-export const planTool = defineTool(
-  "plan",
-  "Create and manage structured execution plans. Use for breaking down complex objectives into ordered steps with status tracking. Actions: create, update, get, list, delete, update_step.",
-  {
-    action: z
-      .enum(["create", "update", "get", "list", "delete", "update_step"])
-      .describe(
-        "Action to perform. 'create': new plan, 'update': modify plan title/steps, 'get': retrieve a plan, 'list': list all plans, 'delete': remove a plan, 'update_step': update a single step's status/content.",
-      ),
-    planId: z
-      .string()
-      .optional()
-      .describe("Plan ID. Required for get, update, delete, update_step."),
-    title: z
-      .string()
-      .optional()
-      .describe("Plan title. Required for create, optional for update."),
-    steps: z
-      .array(
-        z.object({
-          content: z.string().describe("Step description"),
-          status: stepStatusEnum
-            .optional()
-            .describe("Step status. Defaults to 'pending'."),
-        }),
-      )
-      .optional()
-      .describe(
-        "Plan steps. Required for create, optional for update (replaces all steps).",
-      ),
-    stepId: z.string().optional().describe("Step ID. Required for update_step."),
-    stepStatus: stepStatusEnum
-      .optional()
-      .describe("New status for a step. Used with update_step."),
-    stepContent: z
-      .string()
-      .optional()
-      .describe("New content for a step. Used with update_step."),
-  },
-  async (input) => {
-    try {
-      switch (input.action) {
-        case "create":
-          return createPlan(input);
-        case "update":
-          return updatePlan(input);
-        case "get":
-          return getPlan(input);
-        case "list":
-          return listPlans();
-        case "delete":
-          return deletePlan(input);
-        case "update_step":
-          return updateStep(input);
-        default:
-          return { error: `Unknown action: ${input.action as string}` };
+/** Create a plan tool backed by an isolated store. */
+export function createPlanTool(store: PlanStore = new Map()) {
+  return defineTool(
+    "plan",
+    "Create and manage structured execution plans. Use for breaking down complex objectives into ordered steps with status tracking. Actions: create, update, get, list, delete, update_step.",
+    {
+      action: z
+        .enum(["create", "update", "get", "list", "delete", "update_step"])
+        .describe(
+          "Action to perform. 'create': new plan, 'update': modify plan title/steps, 'get': retrieve a plan, 'list': list all plans, 'delete': remove a plan, 'update_step': update a single step's status/content.",
+        ),
+      planId: z
+        .string()
+        .optional()
+        .describe("Plan ID. Required for get, update, delete, update_step."),
+      title: z
+        .string()
+        .optional()
+        .describe("Plan title. Required for create, optional for update."),
+      steps: z
+        .array(
+          z.object({
+            content: z.string().describe("Step description"),
+            status: stepStatusEnum
+              .optional()
+              .describe("Step status. Defaults to 'pending'."),
+          }),
+        )
+        .optional()
+        .describe(
+          "Plan steps. Required for create, optional for update (replaces all steps).",
+        ),
+      stepId: z
+        .string()
+        .optional()
+        .describe("Step ID. Required for update_step."),
+      stepStatus: stepStatusEnum
+        .optional()
+        .describe("New status for a step. Used with update_step."),
+      stepContent: z
+        .string()
+        .optional()
+        .describe("New content for a step. Used with update_step."),
+    },
+    async (input) => {
+      try {
+        switch (input.action) {
+          case "create":
+            return createPlan(store, input);
+          case "update":
+            return updatePlan(store, input);
+          case "get":
+            return getPlan(store, input);
+          case "list":
+            return listPlans(store);
+          case "delete":
+            return deletePlan(store, input);
+          case "update_step":
+            return updateStep(store, input);
+          default:
+            return { error: `Unknown action: ${input.action as string}` };
+        }
+      } catch (error) {
+        return { error: String(error) };
       }
-    } catch (error) {
-      return { error: String(error) };
-    }
-  },
-  {
-    riskLevel: "low",
-    tags: ["builtin", "planning"],
-    annotations: { openWorldHint: false },
-  },
-);
+    },
+    {
+      riskLevel: "low",
+      tags: ["builtin", "planning"],
+      annotations: { openWorldHint: false },
+    },
+  );
+}
+
+/** Backward-compatible singleton. AgentRuntime registers factory instances. */
+export const planTool = createPlanTool(defaultPlanStore);
 
 // ─── Action Handlers ──────────────────────────────────────────────
 
-function createPlan(input: PlanToolInput) {
+function createPlan(planStore: PlanStore, input: PlanToolInput) {
   if (!input.title) {
     return { error: "title is required for 'create' action" };
   }
@@ -150,7 +170,7 @@ function createPlan(input: PlanToolInput) {
   };
 }
 
-function updatePlan(input: PlanToolInput) {
+function updatePlan(planStore: PlanStore, input: PlanToolInput) {
   if (!input.planId) {
     return { error: "planId is required for 'update' action" };
   }
@@ -191,7 +211,7 @@ function updatePlan(input: PlanToolInput) {
   };
 }
 
-function getPlan(input: PlanToolInput) {
+function getPlan(planStore: PlanStore, input: PlanToolInput) {
   if (!input.planId) {
     return { error: "planId is required for 'get' action" };
   }
@@ -212,7 +232,7 @@ function getPlan(input: PlanToolInput) {
   return { plan, progress };
 }
 
-function listPlans() {
+function listPlans(planStore: PlanStore) {
   const plans = [...planStore.values()].map((p) => ({
     id: p.id,
     title: p.title,
@@ -226,7 +246,7 @@ function listPlans() {
   return { totalPlans: plans.length, plans };
 }
 
-function deletePlan(input: PlanToolInput) {
+function deletePlan(planStore: PlanStore, input: PlanToolInput) {
   if (!input.planId) {
     return { error: "planId is required for 'delete' action" };
   }
@@ -239,7 +259,7 @@ function deletePlan(input: PlanToolInput) {
   return { status: "success", action: "delete", planId: input.planId };
 }
 
-function updateStep(input: PlanToolInput) {
+function updateStep(planStore: PlanStore, input: PlanToolInput) {
   if (!input.planId) {
     return { error: "planId is required for 'update_step' action" };
   }
@@ -288,9 +308,9 @@ function updateStep(input: PlanToolInput) {
 // ─── Utilities (for testing) ──────────────────────────────────────
 
 export function getPlanStore() {
-  return planStore;
+  return defaultPlanStore;
 }
 
 export function clearPlanStore() {
-  planStore.clear();
+  defaultPlanStore.clear();
 }

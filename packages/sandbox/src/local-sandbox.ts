@@ -56,6 +56,7 @@ export class LocalSandbox implements Sandbox {
         timeout: timeoutMs,
         input: command.stdin,
         reject: false,
+        cancelSignal: command.signal,
       });
 
       return {

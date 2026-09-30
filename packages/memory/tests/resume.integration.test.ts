@@ -40,7 +40,8 @@ class MockProvider implements LLMProvider {
   async *stream(request: LLMChatRequest): AsyncIterable<LLMStreamChunk> {
     this.calls.push(request);
     const response = this.responses[this.callIndex++] ?? { content: "default" };
-    if (response.content) yield { type: "text_delta", content: response.content };
+    if (response.content)
+      yield { type: "text_delta", content: response.content };
     if (response.toolCalls) {
       for (const tc of response.toolCalls) {
         yield {
@@ -111,7 +112,9 @@ describe("Agent.resume", () => {
     await agent2.run("What language do I prefer?");
 
     const history = mp2.calls[0].messages;
-    const texts = history.filter((m) => m.role === "user").map((m) => m.content);
+    const texts = history
+      .filter((m) => m.role === "user")
+      .map((m) => m.content);
     expect(texts).toContain("Remember I prefer TypeScript");
     expect(texts).toContain("What language do I prefer?");
 
@@ -120,12 +123,7 @@ describe("Agent.resume", () => {
 
   it("interrupt → resume rehydrates the cancelled run's evicted tool result to full", async () => {
     const huge = "z".repeat(3000);
-    const bigTool = defineTool(
-      "get_log",
-      "Fetch a log",
-      {},
-      async () => huge,
-    );
+    const bigTool = defineTool("get_log", "Fetch a log", {}, async () => huge);
 
     // Run 1 interrupted: the tool returns, we interrupt before the follow-up model call.
     const plugin1 = new MemoryPlugin({

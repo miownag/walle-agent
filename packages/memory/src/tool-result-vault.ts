@@ -74,8 +74,10 @@ export class ToolResultVault {
   constructor(options: Partial<ToolResultVaultOptions> & { dir: string }) {
     this.dir = options.dir;
     this.thresholdChars = options.thresholdChars ?? DEFAULTS.thresholdChars;
-    this.previewHeadLines = options.previewHeadLines ?? DEFAULTS.previewHeadLines;
-    this.previewTailLines = options.previewTailLines ?? DEFAULTS.previewTailLines;
+    this.previewHeadLines =
+      options.previewHeadLines ?? DEFAULTS.previewHeadLines;
+    this.previewTailLines =
+      options.previewTailLines ?? DEFAULTS.previewTailLines;
   }
 
   /**
@@ -189,7 +191,11 @@ export class ToolResultVault {
       status: params.status,
     };
     this.indexByCallId.set(params.toolCallId, indexEntry);
-    await fs.appendFile(this.indexFile(), JSON.stringify(indexEntry) + "\n", "utf-8");
+    await fs.appendFile(
+      this.indexFile(),
+      JSON.stringify(indexEntry) + "\n",
+      "utf-8",
+    );
 
     return envelope;
   }
@@ -233,7 +239,9 @@ export class ToolResultVault {
    * Best-effort read of envelope by id. Prefer decoding from message content,
    * this only exists for manual inspection.
    */
-  async readEnvelope(toolCallId: string): Promise<EvictedToolResultMeta | undefined> {
+  async readEnvelope(
+    toolCallId: string,
+  ): Promise<EvictedToolResultMeta | undefined> {
     const safeId = this.sanitize(toolCallId);
     const metaFile = path.join(this.dir, `${safeId}.meta.json`);
     try {
@@ -255,7 +263,14 @@ export class ToolResultVault {
    * This is what the LLM sees on *future* turns for an evicted tool result.
    */
   formatSummary(envelope: EvictedToolResult): string {
-    const { path: p, toolCallId, toolName, size, evictedAt, preview } = envelope;
+    const {
+      path: p,
+      toolCallId,
+      toolName,
+      size,
+      evictedAt,
+      preview,
+    } = envelope;
     return (
       `Tool result too long. You can read ${p} if needed.\n` +
       `(toolCallId=${toolCallId}, tool=${toolName}, size=${size} chars, evictedAt=${evictedAt})\n\n` +
@@ -300,7 +315,9 @@ export class ToolResultVault {
  * Try to decode an evicted envelope out of a ModelMessage.content string.
  * Returns the envelope if the content is valid JSON with `_kind === walle.evicted-tool-result`.
  */
-export function tryDecodeEviction(content: unknown): EvictedToolResult | undefined {
+export function tryDecodeEviction(
+  content: unknown,
+): EvictedToolResult | undefined {
   if (typeof content !== "string") return undefined;
   if (!content.startsWith("{")) return undefined;
   try {

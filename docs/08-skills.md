@@ -270,9 +270,23 @@ export class SkillFileStore implements SkillStore {
 }
 ```
 
-- `listAll()`：扫描 `<rootDir>/skills/` 下所有子目录，加载每个 `SKILL.md`；单文件解析失败时 `console.warn` 并跳过，不影响其他 skill。
-- `save()`：`mkdir -p` 后写 `SKILL.md`（YAML frontmatter + 正文）。
-- `delete()`：`rm -rf <rootDir>/skills/<slug>`。
+- `listAll()`：扫描 `<rootDir>/skills/` 下所有合法 slug 子目录，加载每个 `SKILL.md`；单文件解析失败或路径不安全时 `console.warn` 并跳过，不影响其他 skill。
+- `get()`：只接受规范化 slug；包含绝对路径、`..`、路径分隔符或非规范形式的输入会被当作不存在，避免目录穿越。
+- `save()`：逐层校验目录后，在 skill 目录内创建独占临时文件，`fsync` 后通过同目录 `rename` 原子替换 `SKILL.md`。
+- `delete()`：只删除通过边界校验的 `<rootDir>/skills/<slug>`；遇到不安全路径会明确报错。
+
+### 文件系统安全边界
+
+`SkillFileStore` 把配置的 scope root 视为最外层边界，并对 root、`skills/`、slug
+目录和 `SKILL.md` 分别执行 `lstat`。这四层中的任意符号链接都不会被跟随：读取时安全跳过，
+写入和删除时拒绝操作。每个已解析路径还会通过 `realpath` 再确认仍位于 scope root（skill
+文件同时必须位于对应 slug 目录）之内，以免项目内恶意 `.agents` 内容把 Skill 的读取、
+自进化写入或删除重定向到工作区之外。
+
+保存使用 `O_EXCL` 和平台支持时的 `O_NOFOLLOW` 创建随机临时文件，并在替换前再次校验目录
+与目标文件；失败时会清理尚未 rename 的临时文件。由于 Node 的路径式文件系统 API 不提供
+跨平台 `openat(2)`，这是一组保守的“不跟随链接 + 临近操作重校验”边界，而不是让调用方
+自行信任仓库中的目录结构。
 
 ---
 

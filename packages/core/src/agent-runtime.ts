@@ -22,7 +22,15 @@ import { TokenBudget } from "./token-budget.js";
 import { PromptBuilder } from "./prompt-builder.js";
 import { AgentContextImpl } from "./agent-context.js";
 import { AgentStream, type AgentStreamEvent } from "./stream.js";
-import { BUILTIN_TOOLS } from "./builtin-tools/index.js";
+import {
+  BUILTIN_TOOLS,
+  createFilesystemTools,
+  FILESYSTEM_TOOL_NAMES,
+  createPlanTool,
+  createWriteTodosTool,
+  type PlanStore,
+  type TodoStore,
+} from "./builtin-tools/index.js";
 import { createTaskTool, TASK_TOOL_NAME } from "./builtin-tools/task-tool.js";
 import {
   createToolSearchTool,
@@ -31,16 +39,49 @@ import {
 } from "./builtin-tools/tool-search.js";
 import { createDeferExecuteTool } from "./builtin-tools/defer-execute-tool.js";
 import { READ_TOOL_RESULT_NAME } from "./builtin-tools/read-tool-result.js";
-import { createWebFetchTool, WEB_FETCH_NAME } from "./builtin-tools/web-fetch-tool.js";
+import {
+  createWebFetchTool,
+  WEB_FETCH_NAME,
+} from "./builtin-tools/web-fetch-tool.js";
 import { SubAgentRegistry } from "./sub-agent-registry.js";
 import { mergeAbortSignals } from "./signal-utils.js";
 import { partitionByTurns } from "./message-compactor.js";
-import { summariseConversation, SUMMARY_MESSAGE_PREFIX } from "./conversation-summarizer.js";
+import {
+  summariseConversation,
+  SUMMARY_MESSAGE_PREFIX,
+} from "./conversation-summarizer.js";
 import { estimateTokens } from "./token-estimate.js";
+import type { TokenUsage } from "./types.js";
 
 interface ActiveRun {
   id: string;
   controller: AbortController;
+}
+
+function classifyResolvedToolOutput(
+  tool: Tool,
+  output: unknown,
+): Pick<ToolCallRecord, "status" | "error"> {
+  if (
+    !tool.tags?.includes("shell") ||
+    output === null ||
+    typeof output !== "object" ||
+    Array.isArray(output)
+  ) {
+    return { status: "success" };
+  }
+
+  const result = output as { exitCode?: unknown; timedOut?: unknown };
+  if (result.timedOut === true) {
+    return { status: "timeout", error: "Shell command timed out" };
+  }
+  if (typeof result.exitCode === "number" && result.exitCode !== 0) {
+    return {
+      status: "error",
+      error: `Shell command exited with code ${result.exitCode}`,
+    };
+  }
+  return { status: "success" };
 }
 
 export class AgentRuntime {
@@ -51,6 +92,9 @@ export class AgentRuntime {
   private eventBus: EventBus;
   private tokenBudget: TokenBudget;
   private promptBuilder: PromptBuilder;
+  /** Per-Agent state for the planning built-ins; cleared explicitly on dispose. */
+  private readonly planStore: PlanStore = new Map();
+  private readonly todoStore: TodoStore = new Map();
   /**
    * Per-Agent registry of sub-agent types consumed by the built-in `task`
    * tool. Pre-populated from `config.subAgents`; plugins (e.g. team's
@@ -136,16 +180,46 @@ export class AgentRuntime {
     // Disabled entirely
     if (config === false) return;
 
-    let toolsToRegister: Tool[] = BUILTIN_TOOLS;
+    // Stateful planning tools must never reuse the module-level compatibility
+    // singletons: every Agent owns stores that become collectible on dispose.
+    const perAgentStatefulTools = [
+      createPlanTool(this.planStore),
+      createWriteTodosTool(this.todoStore),
+    ];
+    const perAgentStatefulByName = new Map(
+      perAgentStatefulTools.map((tool) => [tool.name, tool]),
+    );
+    let availableTools: Tool[] = BUILTIN_TOOLS.map(
+      (tool) => perAgentStatefulByName.get(tool.name) ?? tool,
+    );
+
+    // A configured workspace gets fresh, per-Agent filesystem tool instances.
+    // Module-level BUILTIN_TOOLS remains untouched for backward compatibility.
+    if (this.config.workspaceRoot !== undefined) {
+      const filesystemTools = createFilesystemTools({
+        workspaceRoot: this.config.workspaceRoot,
+      }).tools;
+      const filesystemByName = new Map(
+        filesystemTools.map((tool) => [tool.name, tool]),
+      );
+      const filesystemNames = new Set<string>(FILESYSTEM_TOOL_NAMES);
+      availableTools = availableTools.map((tool) =>
+        filesystemNames.has(tool.name)
+          ? (filesystemByName.get(tool.name) ?? tool)
+          : tool,
+      );
+    }
+
+    let toolsToRegister = availableTools;
 
     // Fine-grained include/exclude
     if (typeof config === "object") {
       if (config.includeTools && config.includeTools.length > 0) {
         const includeSet = new Set(config.includeTools);
-        toolsToRegister = BUILTIN_TOOLS.filter((t) => includeSet.has(t.name));
+        toolsToRegister = availableTools.filter((t) => includeSet.has(t.name));
       } else if (config.excludeTools && config.excludeTools.length > 0) {
         const excludeSet = new Set(config.excludeTools);
-        toolsToRegister = BUILTIN_TOOLS.filter((t) => !excludeSet.has(t.name));
+        toolsToRegister = availableTools.filter((t) => !excludeSet.has(t.name));
       }
     }
 
@@ -170,7 +244,10 @@ export class AgentRuntime {
     if (typeof config === "object") {
       if (config.includeTools && config.includeTools.length > 0) {
         if (!config.includeTools.includes(TASK_TOOL_NAME)) return;
-      } else if (config.excludeTools && config.excludeTools.includes(TASK_TOOL_NAME)) {
+      } else if (
+        config.excludeTools &&
+        config.excludeTools.includes(TASK_TOOL_NAME)
+      ) {
         return;
       }
     }
@@ -184,6 +261,7 @@ export class AgentRuntime {
       registry: this.subAgentRegistry,
       defaultModel: this.config.model,
       defaultMaxTurns: this.config.maxTurns,
+      workspaceRoot: this.config.workspaceRoot,
     });
     this.toolRegistry.register(taskTool);
   }
@@ -204,7 +282,10 @@ export class AgentRuntime {
     if (typeof config === "object") {
       if (config.includeTools && config.includeTools.length > 0) {
         if (!config.includeTools.includes(WEB_FETCH_NAME)) return;
-      } else if (config.excludeTools && config.excludeTools.includes(WEB_FETCH_NAME)) {
+      } else if (
+        config.excludeTools &&
+        config.excludeTools.includes(WEB_FETCH_NAME)
+      ) {
         return;
       }
     }
@@ -232,7 +313,9 @@ export class AgentRuntime {
     if (this.config.useBuiltinTools === false) return;
 
     const all = this.toolRegistry.list();
-    const shadowable = all.filter((t) => isShadowable(t, ts.alwaysActiveTags, ts.alwaysShadowTags));
+    const shadowable = all.filter((t) =>
+      isShadowable(t, ts.alwaysActiveTags, ts.alwaysShadowTags),
+    );
 
     if (ts.mode === "auto" && all.length <= ts.threshold) return;
     if (shadowable.length === 0) return;
@@ -252,7 +335,9 @@ export class AgentRuntime {
     }
 
     if (wantSearch && !this.toolRegistry.has(TOOL_SEARCH_NAME)) {
-      this.toolRegistry.register(createToolSearchTool({ registry: this.toolRegistry }));
+      this.toolRegistry.register(
+        createToolSearchTool({ registry: this.toolRegistry }),
+      );
     }
     if (wantDefer && !this.toolRegistry.has(DEFER_EXECUTE_NAME)) {
       this.toolRegistry.register(
@@ -304,7 +389,13 @@ export class AgentRuntime {
     if (est <= max * mc.threshold) return;
 
     try {
-      await this.runMacroCompact(messages, runId, sessionId, mc.summaryModel, signal);
+      await this.runMacroCompact(
+        messages,
+        runId,
+        sessionId,
+        mc.summaryModel,
+        signal,
+      );
     } catch (err) {
       // Never crash the run on a summarisation failure.
       // eslint-disable-next-line no-console
@@ -373,6 +464,10 @@ export class AgentRuntime {
       before,
       after: messages.length,
       summary,
+      // Do not expose the live array itself to observational listeners. The
+      // message objects are treated as immutable by the runtime; copying the
+      // array prevents a listener from splicing the active conversation.
+      messages: messages.slice(),
     });
   }
 
@@ -405,7 +500,10 @@ export class AgentRuntime {
     const beforeMessages = messages.length;
     const beforeTokens = estimateTokens(messages);
 
-    const keep = options?.keepRecentTurns ?? this.config.macroCompression?.keepRecentTurns ?? 3;
+    const keep =
+      options?.keepRecentTurns ??
+      this.config.macroCompression?.keepRecentTurns ??
+      3;
 
     const partition = partitionByTurns(messages, keep);
     if (partition.evictableIndices.size === 0) {
@@ -429,8 +527,11 @@ export class AgentRuntime {
       summaryPrompt: savedMc?.summaryPrompt,
       manualOnly: false,
     };
-    (this.config as ResolvedAgentConfig & { macroCompression: typeof overrideMc }).macroCompression =
-      overrideMc;
+    (
+      this.config as ResolvedAgentConfig & {
+        macroCompression: typeof overrideMc;
+      }
+    ).macroCompression = overrideMc;
     try {
       await this.runMacroCompact(
         messages,
@@ -440,7 +541,8 @@ export class AgentRuntime {
         undefined,
       );
     } finally {
-      (this.config as { macroCompression: typeof savedMc }).macroCompression = savedMc;
+      (this.config as { macroCompression: typeof savedMc }).macroCompression =
+        savedMc;
     }
 
     const summaryMsg = messages.find(
@@ -451,7 +553,8 @@ export class AgentRuntime {
     );
 
     return {
-      summary: typeof summaryMsg?.content === "string" ? summaryMsg.content : "",
+      summary:
+        typeof summaryMsg?.content === "string" ? summaryMsg.content : "",
       beforeMessages,
       afterMessages: messages.length,
       beforeTokens,
@@ -485,7 +588,10 @@ export class AgentRuntime {
   /**
    * Non-streaming execution: internally calls stream, collects all events.
    */
-  async run(input: string | AgentInput, options?: RunOptions): Promise<import("./agent-config.js").AgentResult> {
+  async run(
+    input: string | AgentInput,
+    options?: RunOptions,
+  ): Promise<import("./agent-config.js").AgentResult> {
     const stream = this.stream(input, options);
     return stream.collect();
   }
@@ -534,7 +640,10 @@ export class AgentRuntime {
 
     const internalController = new AbortController();
     this.activeRun = { id: runId, controller: internalController };
-    const signal = mergeAbortSignals(options?.signal, internalController.signal);
+    const signal = mergeAbortSignals(
+      options?.signal,
+      internalController.signal,
+    );
 
     let status: RunStatus = "completed";
     let runError: unknown | undefined;
@@ -549,201 +658,238 @@ export class AgentRuntime {
     const userCancelled = () => signal.aborted;
 
     try {
-      // 1. Middleware: beforeInput
-      const processedInput = await this.middlewarePipeline.beforeInput(input);
+      try {
+        // 1. Middleware: beforeInput
+        const processedInput = await this.middlewarePipeline.beforeInput(input);
 
-      // 2. Emit run_start + hook
-      yield { type: "run_start", input: processedInput, runId, sessionId };
-      await this.eventBus.emit("run_start", { input: processedInput, runId, sessionId });
-      await this.hookManager.emit("onRunStart", { input: processedInput, runId, sessionId });
+        // 2. Emit run_start + hook
+        yield { type: "run_start", input: processedInput, runId, sessionId };
+        await this.eventBus.emit("run_start", {
+          input: processedInput,
+          runId,
+          sessionId,
+        });
+        await this.hookManager.emit("onRunStart", {
+          input: processedInput,
+          runId,
+          sessionId,
+        });
 
-      if (userCancelled()) {
-        status = "user-cancelled";
-        return;
-      }
-
-      // 3. Collect conversation history from plugins (Memory)
-      const history = await this.collectMessages(sessionId);
-
-      // 4. Collect context from plugins (Memory/Skills/RAG)
-      const contextItems = await this.collectContext(processedInput);
-
-      // 5. Token budget allocation
-      const budget = this.tokenBudget.allocate(contextItems);
-
-      // 6. Build message list
-      messages = this.promptBuilder.build({
-        systemPrompt: this.config.systemPrompt,
-        input: processedInput,
-        context: budget.items,
-        tools: this.toolRegistry.list(),
-        conversationHistory: history,
-      });
-
-      // 7. Execution loop
-      const maxTurns = options?.maxTurns ?? this.config.maxTurns;
-
-      for (let turn = 0; turn < maxTurns; turn++) {
         if (userCancelled()) {
           status = "user-cancelled";
           return;
         }
 
-        // Micro compression: emit so plugins (e.g. MemoryPlugin) can rewrite
-        // older tool messages into placeholders.
-        await this.eventBus.emit("compact_messages", {
-          messages,
-          keepRecentTurns: this.resolvedKeepRecentTurns(),
-          runId,
-          sessionId,
+        // 3. Collect conversation history from plugins (Memory)
+        const history = await this.collectMessages(sessionId);
+
+        // 4. Collect context from plugins (Memory/Skills/RAG)
+        const contextItems = await this.collectContext(processedInput);
+
+        // 5. Token budget allocation
+        const budget = this.tokenBudget.allocate(contextItems);
+
+        // 6. Build message list
+        messages = this.promptBuilder.build({
+          systemPrompt: this.config.systemPrompt,
+          input: processedInput,
+          context: budget.items,
+          tools: this.toolRegistry.list(),
+          conversationHistory: history,
         });
 
-        // Macro compression: between-turns auto-trigger.
-        await this.maybeMacroCompact(messages, runId, sessionId, signal);
+        // 7. Execution loop
+        const maxTurns = options?.maxTurns ?? this.config.maxTurns;
 
-        await this.hookManager.emit("beforeModelCall", { messages });
+        for (let turn = 0; turn < maxTurns; turn++) {
+          if (userCancelled()) {
+            status = "user-cancelled";
+            return;
+          }
 
-        yield { type: "model_call_start", turn };
+          // Micro compression: emit so plugins (e.g. MemoryPlugin) can rewrite
+          // older tool messages into placeholders.
+          await this.eventBus.emit("compact_messages", {
+            messages,
+            keepRecentTurns: this.resolvedKeepRecentTurns(),
+            runId,
+            sessionId,
+          });
 
-        // Stream LLM call. The signal is threaded into the request so compliant
-        // providers (anything using fetch / SDK clients that accept a signal)
-        // will throw/settle when the user interrupts.
-        const llmStream = this.config.model.stream({
-          messages,
-          tools: this.toolRegistry.listActive().length > 0 ? this.toolRegistry.toModelTools() : undefined,
-          signal,
-        });
+          // Macro compression: between-turns auto-trigger.
+          await this.maybeMacroCompact(messages, runId, sessionId, signal);
 
-        let assistantMessage: ModelMessage | null = null;
-        let toolCalls: ModelToolCall[] = [];
+          await this.hookManager.emit("beforeModelCall", { messages });
 
-        try {
-          for await (const chunk of llmStream) {
+          yield { type: "model_call_start", turn };
+
+          // Stream LLM call. The signal is threaded into the request so compliant
+          // providers (anything using fetch / SDK clients that accept a signal)
+          // will throw/settle when the user interrupts.
+          const llmStream = this.config.model.stream({
+            messages,
+            tools:
+              this.toolRegistry.listActive().length > 0
+                ? this.toolRegistry.toModelTools()
+                : undefined,
+            signal,
+          });
+
+          let assistantMessage: ModelMessage | null = null;
+          let toolCalls: ModelToolCall[] = [];
+          let modelUsage: TokenUsage | undefined;
+
+          try {
+            for await (const chunk of llmStream) {
+              if (userCancelled()) {
+                status = "user-cancelled";
+                return;
+              }
+
+              yield { type: "llm_chunk", chunk };
+
+              if (chunk.type === "text_delta") {
+                yield { type: "text_delta", content: chunk.content };
+              }
+
+              if (chunk.type === "thinking_delta") {
+                yield { type: "thinking_delta", content: chunk.content };
+              }
+
+              if (chunk.type === "tool_call_delta") {
+                yield {
+                  type: "tool_call_delta",
+                  toolCallId: chunk.toolCallId,
+                  name: chunk.name,
+                  argumentsDelta: chunk.argumentsDelta,
+                };
+              }
+
+              if (chunk.type === "message_complete") {
+                assistantMessage = chunk.message;
+                toolCalls = chunk.toolCalls ?? [];
+                modelUsage = chunk.usage;
+              }
+
+              if (chunk.type === "error") {
+                yield { type: "error", error: chunk.error };
+                status = "error";
+                runError = chunk.error;
+                return;
+              }
+            }
+          } catch (streamErr) {
+            // The provider threw — usually because its underlying fetch/SDK saw
+            // the aborted signal. If that's the case, report as user-cancelled;
+            // otherwise bubble as a regular run error.
+            if (userCancelled()) {
+              status = "user-cancelled";
+              return;
+            }
+            throw streamErr;
+          }
+
+          if (!assistantMessage) {
+            if (userCancelled()) {
+              // Stream was aborted by the user before the model emitted
+              // `message_complete`; treat it as a clean cancellation, not an error.
+              status = "user-cancelled";
+              return;
+            }
+            const err = new Error("LLM stream ended without complete message");
+            yield { type: "error", error: err };
+            status = "error";
+            runError = err;
+            return;
+          }
+
+          messages.push(assistantMessage);
+          yield {
+            type: "model_call_end",
+            message: assistantMessage,
+            ...(modelUsage ? { usage: modelUsage } : {}),
+          };
+          await this.eventBus.emit("model_call_end", {
+            message: assistantMessage,
+          });
+          await this.hookManager.emit("afterModelCall", {
+            message: assistantMessage,
+            ...(modelUsage ? { usage: modelUsage } : {}),
+          });
+
+          // No tool calls — end loop
+          if (!toolCalls.length) {
+            break;
+          }
+
+          // Execute tool calls
+          for (const call of toolCalls) {
             if (userCancelled()) {
               status = "user-cancelled";
               return;
             }
 
-            yield { type: "llm_chunk", chunk };
+            yield { type: "tool_call_start", call };
+            await this.eventBus.emit("tool_call_start", { call });
+            await this.hookManager.emit("beforeToolCall", { call });
 
-            if (chunk.type === "text_delta") {
-              yield { type: "text_delta", content: chunk.content };
-            }
+            const record = await this.executeToolCall(call, signal);
 
-            if (chunk.type === "tool_call_delta") {
-              yield {
-                type: "tool_call_delta",
-                toolCallId: chunk.toolCallId,
-                name: chunk.name,
-                argumentsDelta: chunk.argumentsDelta,
-              };
-            }
+            yield { type: "tool_call_end", record };
+            await this.eventBus.emit("tool_call_end", { record });
+            await this.hookManager.emit("afterToolCall", { record });
 
-            if (chunk.type === "message_complete") {
-              assistantMessage = chunk.message;
-              toolCalls = chunk.toolCalls ?? [];
-            }
-
-            if (chunk.type === "error") {
-              yield { type: "error", error: chunk.error };
-              status = "error";
-              runError = chunk.error;
-              return;
-            }
+            messages.push({
+              role: "tool",
+              toolCallId: call.id,
+              content: this.serializeToolOutput(record.output),
+              metadata: { toolName: call.name, status: record.status },
+            });
           }
-        } catch (streamErr) {
-          // The provider threw — usually because its underlying fetch/SDK saw
-          // the aborted signal. If that's the case, report as user-cancelled;
-          // otherwise bubble as a regular run error.
-          if (userCancelled()) {
-            status = "user-cancelled";
-            return;
-          }
-          throw streamErr;
+        }
+      } catch (err) {
+        status = "error";
+        runError = err;
+        yield {
+          type: "error",
+          error: err instanceof Error ? err : new Error(String(err)),
+        };
+        await this.hookManager.emit("onRunError", {
+          error: err,
+          runId,
+          sessionId,
+        });
+      } finally {
+        // Final status override: if signal was aborted anywhere, report cancelled.
+        if (userCancelled() && status !== "error") {
+          status = "user-cancelled";
         }
 
-        if (!assistantMessage) {
-          if (userCancelled()) {
-            // Stream was aborted by the user before the model emitted
-            // `message_complete`; treat it as a clean cancellation, not an error.
-            status = "user-cancelled";
-            return;
-          }
-          const err = new Error("LLM stream ended without complete message");
-          yield { type: "error", error: err };
-          status = "error";
-          runError = err;
-          return;
-        }
-
-        messages.push(assistantMessage);
-        yield { type: "model_call_end", message: assistantMessage };
-        await this.eventBus.emit("model_call_end", { message: assistantMessage });
-        await this.hookManager.emit("afterModelCall", { message: assistantMessage });
-
-        // No tool calls — end loop
-        if (!toolCalls.length) {
-          break;
-        }
-
-        // Execute tool calls
-        for (const call of toolCalls) {
-          if (userCancelled()) {
-            status = "user-cancelled";
-            return;
-          }
-
-          yield { type: "tool_call_start", call };
-          await this.eventBus.emit("tool_call_start", { call });
-          await this.hookManager.emit("beforeToolCall", { call });
-
-          const record = await this.executeToolCall(call, signal);
-
-          yield { type: "tool_call_end", record };
-          await this.eventBus.emit("tool_call_end", { record });
-          await this.hookManager.emit("afterToolCall", { record });
-
-          messages.push({
-            role: "tool",
-            toolCallId: call.id,
-            content: this.serializeToolOutput(record.output),
-            metadata: { toolName: call.name, status: record.status },
-          });
-        }
+        yield {
+          type: "run_end",
+          runId,
+          sessionId,
+          status,
+          error: runError,
+        };
+        await this.eventBus.emit("run_end", {
+          messages,
+          runId,
+          sessionId,
+          status,
+          error: runError,
+        });
+        await this.hookManager.emit("onRunEnd", {
+          runId,
+          sessionId,
+          status,
+          messages,
+        });
       }
-    } catch (err) {
-      status = "error";
-      runError = err;
-      yield { type: "error", error: err instanceof Error ? err : new Error(String(err)) };
-      await this.hookManager.emit("onRunError", { error: err, runId, sessionId });
     } finally {
-      // Final status override: if signal was aborted anywhere, report cancelled.
-      if (userCancelled() && status !== "error") {
-        status = "user-cancelled";
-      }
-
-      yield {
-        type: "run_end",
-        runId,
-        sessionId,
-        status,
-        error: runError,
-      };
-      await this.eventBus.emit("run_end", {
-        messages,
-        runId,
-        sessionId,
-        status,
-        error: runError,
-      });
-      await this.hookManager.emit("onRunEnd", {
-        runId,
-        sessionId,
-        status,
-        messages,
-      });
-
-      // Release the "active run" slot so a subsequent `agent.run(...)` works.
+      // Teardown observers are user/plugin code and may throw. Releasing the
+      // active-run slot must therefore live outside the entire lifecycle so
+      // their error can still propagate without wedging the Agent forever.
       if (this.activeRun?.id === runId) {
         this.activeRun = null;
       }
@@ -783,13 +929,14 @@ export class AgentRuntime {
         agent: this.agent,
         signal,
       });
+      const outcome = classifyResolvedToolOutput(tool, output);
 
       return {
         id: call.id,
         name: call.name,
         input: call.arguments,
         output,
-        status: "success",
+        ...outcome,
         durationMs: Date.now() - startTime,
       };
     } catch (error) {
@@ -814,21 +961,28 @@ export class AgentRuntime {
     return items;
   }
 
-  private async collectMessages(sessionId: string | undefined): Promise<ModelMessage[]> {
+  private async collectMessages(
+    sessionId: string | undefined,
+  ): Promise<ModelMessage[]> {
     const into: ModelMessage[] = [];
     await this.eventBus.emit("collect_messages", { sessionId, into });
     return into;
   }
 
-  private async checkPermission(tool: Tool, call: ModelToolCall): Promise<PermissionDecision> {
+  private async checkPermission(
+    tool: Tool,
+    call: ModelToolCall,
+  ): Promise<PermissionDecision> {
     if (!this.config.permissions) return { allowed: true };
     return checkToolPermission(tool, call, this.config.permissions);
   }
 
-  private normalizeInput(input: string | AgentInput, options?: RunOptions): AgentInput {
-    const base: AgentInput = typeof input === "string"
-      ? { content: input }
-      : input;
+  private normalizeInput(
+    input: string | AgentInput,
+    options?: RunOptions,
+  ): AgentInput {
+    const base: AgentInput =
+      typeof input === "string" ? { content: input } : input;
 
     return {
       ...base,
@@ -848,8 +1002,13 @@ export class AgentRuntime {
   }
 
   async dispose(): Promise<void> {
-    for (const plugin of [...this.config.plugins].reverse()) {
-      await plugin.dispose?.();
+    try {
+      for (const plugin of [...this.config.plugins].reverse()) {
+        await plugin.dispose?.();
+      }
+    } finally {
+      this.planStore.clear();
+      this.todoStore.clear();
     }
   }
 }

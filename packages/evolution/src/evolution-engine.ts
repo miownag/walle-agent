@@ -40,23 +40,25 @@ export class EvolutionEngine {
    * triggers concurrently. Errors are per-trigger and never propagate out.
    */
   async afterRun(ctx: EvolutionContext): Promise<void> {
+    assertNotAborted(ctx.signal);
     const jobs: Promise<void>[] = [];
 
     if (this.shouldExplicitRemember(ctx)) {
-      jobs.push(this.safe(() => this.handleExplicitRemember(ctx)));
+      jobs.push(this.safe(ctx.signal, () => this.handleExplicitRemember(ctx)));
     }
     if (this.shouldPeriodicReview(ctx)) {
-      jobs.push(this.safe(() => this.periodicReview(ctx)));
+      jobs.push(this.safe(ctx.signal, () => this.periodicReview(ctx)));
     }
     if (this.shouldTaskReview(ctx)) {
-      jobs.push(this.safe(() => this.taskReview(ctx)));
+      jobs.push(this.safe(ctx.signal, () => this.taskReview(ctx)));
     }
 
     await Promise.all(jobs);
   }
 
-  private safe(fn: () => Promise<void>): Promise<void> {
+  private safe(signal: AbortSignal | undefined, fn: () => Promise<void>): Promise<void> {
     return fn().catch((err) => {
+      if (signal?.aborted || isAbortError(err)) return;
       // eslint-disable-next-line no-console
       console.error("[EvolutionEngine] trigger failed:", err);
     });
@@ -97,16 +99,18 @@ export class EvolutionEngine {
 
     const proposals = await this.extractMemoryProposals(
       JSON.stringify({ user: userMsg, assistant: asstMsg }),
+      ctx.signal,
     );
 
     for (const payload of proposals) {
+      assertNotAborted(ctx.signal);
       await this.commitProposal({
         type: "memory",
         payload,
         reason: "explicit_remember",
         runId: ctx.runId,
         sessionId: ctx.sessionId,
-      });
+      }, ctx.signal);
     }
   }
 
@@ -115,15 +119,16 @@ export class EvolutionEngine {
     const recent = ctx.messages.slice(-max);
     const flattened = flattenMessages(recent);
 
-    const proposals = await this.extractMemoryProposals(JSON.stringify(flattened));
+    const proposals = await this.extractMemoryProposals(JSON.stringify(flattened), ctx.signal);
     for (const payload of proposals) {
+      assertNotAborted(ctx.signal);
       await this.commitProposal({
         type: "memory",
         payload,
         reason: "periodic_review",
         runId: ctx.runId,
         sessionId: ctx.sessionId,
-      });
+      }, ctx.signal);
     }
   }
 
@@ -134,7 +139,7 @@ export class EvolutionEngine {
     const recent = ctx.messages.slice(-max);
     const flattened = flattenMessages(recent);
 
-    const proposal = await this.extractSkillProposal(JSON.stringify(flattened));
+    const proposal = await this.extractSkillProposal(JSON.stringify(flattened), ctx.signal);
     if (!proposal) return;
 
     await this.commitProposal({
@@ -143,7 +148,7 @@ export class EvolutionEngine {
       reason: "task_review",
       runId: ctx.runId,
       sessionId: ctx.sessionId,
-    });
+    }, ctx.signal);
   }
 
   // ─── LLM extraction ───────────────────────────────────────────────
@@ -152,14 +157,20 @@ export class EvolutionEngine {
     return this.deps.config.reviewModel ?? this.deps.model;
   }
 
-  private async extractMemoryProposals(userPayload: string): Promise<MemoryProposal[]> {
+  private async extractMemoryProposals(
+    userPayload: string,
+    signal?: AbortSignal,
+  ): Promise<MemoryProposal[]> {
+    assertNotAborted(signal);
     const resp = await this.reviewer().chat({
       responseFormat: "json",
       messages: [
         { role: "system", content: MEMORY_EXTRACTION_PROMPT },
         { role: "user", content: userPayload },
       ],
+      signal,
     });
+    assertNotAborted(signal);
     const text = extractText(resp.message.content);
     const parsed = safeJson(text);
     if (!parsed || !Array.isArray(parsed.memories)) return [];
@@ -169,14 +180,20 @@ export class EvolutionEngine {
       .map((m: MemoryProposal) => normalizeMemoryProposal(m));
   }
 
-  private async extractSkillProposal(userPayload: string): Promise<SkillProposal | null> {
+  private async extractSkillProposal(
+    userPayload: string,
+    signal?: AbortSignal,
+  ): Promise<SkillProposal | null> {
+    assertNotAborted(signal);
     const resp = await this.reviewer().chat({
       responseFormat: "json",
       messages: [
         { role: "system", content: SKILL_EXTRACTION_PROMPT },
         { role: "user", content: userPayload },
       ],
+      signal,
     });
+    assertNotAborted(signal);
     const text = extractText(resp.message.content);
     const parsed = safeJson(text);
     if (!parsed || !parsed.skill || !isSkillProposal(parsed.skill)) return null;
@@ -187,7 +204,9 @@ export class EvolutionEngine {
 
   private async commitProposal(
     proposal: Omit<EvolutionProposal, "id" | "createdAt" | "status">,
+    signal?: AbortSignal,
   ): Promise<void> {
+    assertNotAborted(signal);
     const cfg =
       proposal.type === "memory"
         ? this.deps.config.memoryCreation ?? { enabled: true }
@@ -221,6 +240,7 @@ export class EvolutionEngine {
         // swallow — observer errors must not break evolution.
       }
     }
+    assertNotAborted(signal);
 
     const requireApproval =
       proposal.type === "memory"
@@ -233,17 +253,21 @@ export class EvolutionEngine {
         if (!approved) return;
       } else {
         // Write to disk for offline review; do not apply.
+        assertNotAborted(signal);
         await this.deps.proposalStore.enqueue(staged);
         return;
       }
     }
 
     // Auto-apply path: persist + apply.
+    assertNotAborted(signal);
     const persisted = await this.deps.proposalStore.enqueue(staged);
     try {
-      await this.applyProposal(persisted);
+      await this.applyProposal(persisted, signal);
+      assertNotAborted(signal);
       await this.deps.proposalStore.markApplied(persisted.id!);
     } catch (err) {
+      if (signal?.aborted || isAbortError(err)) return;
       // Leave in pending; operators can retry later.
       // eslint-disable-next-line no-console
       console.error("[EvolutionEngine] failed to apply proposal:", err);
@@ -254,7 +278,8 @@ export class EvolutionEngine {
    * Apply a single approved proposal. Safe to call externally (e.g. from a
    * CLI that reads the proposal queue and approves selectively).
    */
-  async applyProposal(proposal: EvolutionProposal): Promise<void> {
+  async applyProposal(proposal: EvolutionProposal, signal?: AbortSignal): Promise<void> {
+    assertNotAborted(signal);
     if (proposal.type === "memory") {
       const mem = proposal.payload as MemoryProposal;
       await this.deps.memory.remember({
@@ -269,6 +294,7 @@ export class EvolutionEngine {
     }
 
     if (proposal.type === "skill" && this.deps.skills) {
+      assertNotAborted(signal);
       const skill = proposal.payload as SkillProposal;
       await this.deps.skills.register({
         id: newId(),
@@ -294,6 +320,18 @@ export class EvolutionEngine {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error("Evolution review cancelled");
+  error.name = "AbortError";
+  throw error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
 
 function lastUserText(messages: ModelMessage[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {

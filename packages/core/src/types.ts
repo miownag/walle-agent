@@ -26,10 +26,29 @@ export interface TokenUsage {
   cacheWriteTokens?: number;
 }
 
-/** Attachment for multimodal input */
-export interface Attachment {
-  type: "file" | "image" | "url";
+interface AttachmentMetadata {
   name?: string;
   mimeType?: string;
+}
+
+/** Raw image bytes or a base64-encoded image string. `mimeType` is required. */
+export interface ImageAttachment extends AttachmentMetadata {
+  type: "image";
+  mimeType: string;
   data: string | Buffer;
 }
+
+/** HTTP(S) image reference. The URL is never fetched by PromptBuilder. */
+export interface UrlAttachment extends AttachmentMetadata {
+  type: "url";
+  data: string;
+}
+
+/** Local file reference. PromptBuilder describes the path but never reads it. */
+export interface FileAttachment extends AttachmentMetadata {
+  type: "file";
+  data: string;
+}
+
+/** Attachment for multimodal input. */
+export type Attachment = ImageAttachment | UrlAttachment | FileAttachment;

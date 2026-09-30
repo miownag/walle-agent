@@ -76,6 +76,7 @@ export type {
   ModelCallStartEvent,
   ModelCallEndEvent,
   TextDeltaEvent,
+  ThinkingDeltaEvent,
   ToolCallDeltaEvent,
   ToolCallStartEvent,
   ToolCallEndEvent,
@@ -138,8 +139,14 @@ export {
   editFileTool,
   globTool,
   grepTool,
+  createFilesystemTools,
+  FILESYSTEM_TOOL_NAMES,
+  WorkspacePathError,
   bashTool,
+  createPlanTool,
   planTool,
+  createWriteTodosTool,
+  createTodoTool,
   writeTodosTool,
   getPlanStore,
   clearPlanStore,
@@ -162,8 +169,17 @@ export {
   htmlToMarkdown,
   clearWebFetchCache,
 } from "./builtin-tools/index.js";
-export type { Plan, PlanStep, PlanToolInput } from "./builtin-tools/index.js";
 export type {
+  Plan,
+  PlanStep,
+  PlanStore,
+  PlanToolInput,
+  TodoItem,
+  TodoStore,
+} from "./builtin-tools/index.js";
+export type {
+  FilesystemToolsOptions,
+  FilesystemToolSet,
   TaskToolInput,
   TaskToolOutput,
   TaskToolSuccessOutput,

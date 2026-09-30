@@ -13,6 +13,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import type { Dirent } from "node:fs";
 import type { AgentContext } from "@walle-agent/core";
 import type {
   RAGChunk,
@@ -143,7 +144,7 @@ export class SimpleRAGPlugin implements RAGPlugin {
   // ─── internals ──────────────────────────────────────────────────
 
   private async loadDocs(): Promise<void> {
-    const root = this.config.docsPath;
+    const configuredRoot = path.resolve(this.config.docsPath);
     const patterns = this.config.patterns ?? ["**/*.md", "**/*.txt"];
     const allowedExts = new Set(
       patterns
@@ -154,29 +155,27 @@ export class SimpleRAGPlugin implements RAGPlugin {
         .filter((x): x is string => Boolean(x)),
     );
 
-    let entries: string[];
+    let root: string;
     try {
-      entries = (await fs.readdir(root, { recursive: true })) as string[];
+      root = await fs.realpath(configuredRoot);
     } catch (err: any) {
       if (err.code === "ENOENT") return; // Empty knowledge base — silently skip.
       throw err;
     }
 
-    for (const rel of entries) {
+    const entries = await collectRegularFiles(root);
+    for (const { rel, full } of entries) {
       const ext = path.extname(rel).toLowerCase();
       if (allowedExts.size > 0 && !allowedExts.has(ext)) continue;
 
-      const full = path.join(root, rel);
-      let stat;
-      try {
-        stat = await fs.stat(full);
-      } catch {
-        continue; // Race / broken symlink.
-      }
-      if (!stat.isFile()) continue;
-
       let content: string;
       try {
+        // Re-validate immediately before reading. This also prevents a path
+        // swapped to an out-of-root symlink after the directory walk.
+        const real = await fs.realpath(full);
+        if (!isWithinRoot(root, real)) continue;
+        const stat = await fs.lstat(full);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
         content = await fs.readFile(full, "utf8");
       } catch {
         continue;
@@ -212,6 +211,60 @@ export class SimpleRAGPlugin implements RAGPlugin {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────
+
+interface DiscoveredFile {
+  rel: string;
+  full: string;
+}
+
+/**
+ * Walk a knowledge directory without following symbolic links. Every
+ * discovered entry is realpath-checked against the configured root before it
+ * can be traversed or read, preventing workspace symlinks from indexing
+ * unrelated host files.
+ */
+async function collectRegularFiles(root: string): Promise<DiscoveredFile[]> {
+  const files: DiscoveredFile[] = [];
+
+  async function walk(directory: string, relativeDirectory: string): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const rel = relativeDirectory ? path.join(relativeDirectory, entry.name) : entry.name;
+      const full = path.join(directory, entry.name);
+      try {
+        const stat = await fs.lstat(full);
+        if (stat.isSymbolicLink()) continue;
+        const real = await fs.realpath(full);
+        if (!isWithinRoot(root, real)) continue;
+        if (stat.isDirectory()) {
+          await walk(real, rel);
+        } else if (stat.isFile()) {
+          files.push({ rel, full: real });
+        }
+      } catch {
+        // Broken links and entries removed during the walk are ignored.
+      }
+    }
+  }
+
+  await walk(root, "");
+  return files;
+}
+
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relativePath = path.relative(root, candidate);
+  return relativePath === "" || (
+    !path.isAbsolute(relativePath)
+    && relativePath !== ".."
+    && !relativePath.startsWith(`..${path.sep}`)
+  );
+}
 
 function tokenize(s: string): string[] {
   return s

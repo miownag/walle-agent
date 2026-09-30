@@ -16,11 +16,37 @@
  *   built per-agent by AgentRuntime.registerWebFetchTool).
  */
 
-export { lsTool, readFileTool, writeFileTool, editFileTool, globTool, grepTool } from "./filesystem-tools.js";
+export {
+  lsTool,
+  readFileTool,
+  writeFileTool,
+  editFileTool,
+  globTool,
+  grepTool,
+  createFilesystemTools,
+  FILESYSTEM_TOOL_NAMES,
+  WorkspacePathError,
+} from "./filesystem-tools.js";
+export type {
+  FilesystemToolsOptions,
+  FilesystemToolSet,
+} from "./filesystem-tools.js";
 export { bashTool } from "./shell-tool.js";
-export { planTool, getPlanStore, clearPlanStore } from "./plan-tool.js";
-export type { Plan, PlanStep, PlanToolInput } from "./plan-tool.js";
-export { writeTodosTool, getTodoStore, clearTodoStore } from "./todo-tool.js";
+export {
+  createPlanTool,
+  planTool,
+  getPlanStore,
+  clearPlanStore,
+} from "./plan-tool.js";
+export type { Plan, PlanStep, PlanStore, PlanToolInput } from "./plan-tool.js";
+export {
+  createWriteTodosTool,
+  createTodoTool,
+  writeTodosTool,
+  getTodoStore,
+  clearTodoStore,
+} from "./todo-tool.js";
+export type { TodoItem, TodoStore } from "./todo-tool.js";
 export { createTaskTool, TASK_TOOL_NAME } from "./task-tool.js";
 export type {
   TaskToolInput,
@@ -29,7 +55,10 @@ export type {
   TaskToolErrorOutput,
   CreateTaskToolOptions,
 } from "./task-tool.js";
-export { readToolResultTool, READ_TOOL_RESULT_NAME } from "./read-tool-result.js";
+export {
+  readToolResultTool,
+  READ_TOOL_RESULT_NAME,
+} from "./read-tool-result.js";
 export type {
   ReadToolResultInput,
   ReadToolResultOutput,
@@ -74,7 +103,14 @@ export type {
   CreateWebFetchOptions,
 } from "./web-fetch-tool.js";
 
-import { lsTool, readFileTool, writeFileTool, editFileTool, globTool, grepTool } from "./filesystem-tools.js";
+import {
+  lsTool,
+  readFileTool,
+  writeFileTool,
+  editFileTool,
+  globTool,
+  grepTool,
+} from "./filesystem-tools.js";
 import { bashTool } from "./shell-tool.js";
 import { planTool } from "./plan-tool.js";
 import { writeTodosTool } from "./todo-tool.js";
@@ -82,8 +118,9 @@ import { readToolResultTool } from "./read-tool-result.js";
 import type { Tool } from "../tool.js";
 
 /**
- * Module-level built-in tools, registered as-is in
- * `AgentRuntime.registerBuiltinTools()`.
+ * Module-level compatibility tools. `AgentRuntime.registerBuiltinTools()`
+ * replaces stateful tools (`plan`, `write_todos`) and workspace-bound
+ * filesystem tools with fresh per-Agent instances before registration.
  *
  * NOTE: `task` / `tool_search` / `defer_execute_tool` are NOT in this array
  * because their description / dispatch list depends on per-Agent state. The

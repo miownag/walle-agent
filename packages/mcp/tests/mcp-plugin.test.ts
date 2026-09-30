@@ -162,10 +162,11 @@ describe("MCPPlugin", () => {
       { agent: {} as any },
     );
 
-    expect(fs.callTool).toHaveBeenCalledWith({
-      name: "read",
-      arguments: { path: "./foo" },
-    });
+    expect(fs.callTool).toHaveBeenCalledWith(
+      { name: "read", arguments: { path: "./foo" } },
+      undefined,
+      expect.objectContaining({ timeout: 60_000 }),
+    );
     expect(result).toBe("ok");
   });
 });

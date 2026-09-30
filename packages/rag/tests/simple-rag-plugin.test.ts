@@ -78,6 +78,24 @@ describe("SimpleRAGPlugin loadDocs", () => {
     expect(plugin.isInstalled()).toBe(true);
   });
 
+  it("does not follow file or directory symlinks outside docsPath", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "walle-rag-outside-"));
+    try {
+      await fs.writeFile(path.join(outside, "secret.md"), "must never be indexed", "utf8");
+      await fs.symlink(outside, path.join(dir, "linked-dir"), "dir");
+      await fs.symlink(path.join(outside, "secret.md"), path.join(dir, "linked-file.md"));
+      await writeFile("safe.md", "safe knowledge");
+
+      const plugin = new SimpleRAGPlugin({ docsPath: dir });
+      await plugin.install(fakeCollectContextCtx() as any);
+
+      expect(plugin.getChunks().map((chunk) => chunk.source)).toEqual(["safe.md"]);
+      expect(plugin.getChunks().some((chunk) => chunk.content.includes("must never"))).toBe(false);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it("chunks overflow content with overlap", async () => {
     const text = "x".repeat(450);
     await writeFile("big.md", text);

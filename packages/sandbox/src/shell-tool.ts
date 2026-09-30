@@ -41,12 +41,13 @@ export function buildShellTool(sandbox: Sandbox): Tool<ShellToolInput, SandboxRe
           "Per-call timeout override. Falls back to the sandbox's default (30s for local, 60s for docker).",
         ),
     },
-    async (input) => {
+    async (input, ctx) => {
       return sandbox.run({
         cmd: "sh",
         args: ["-c", input.command],
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
       });
     },
     {

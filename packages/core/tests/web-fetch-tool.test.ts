@@ -51,7 +51,12 @@ function makeFetchImpl(
   routes: Record<string, () => Response | Promise<Response>>,
 ): typeof fetch {
   return ((url: string | URL | Request) => {
-    const u = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+    const u =
+      typeof url === "string"
+        ? url
+        : url instanceof URL
+          ? url.toString()
+          : url.url;
     const handler = routes[u];
     if (!handler) {
       return Promise.reject(new Error(`Unexpected fetch URL in test: ${u}`));
@@ -67,7 +72,9 @@ const agentStub = {} as unknown as Agent;
 
 describe("htmlToMarkdown", () => {
   it("preserves the page title as a top-level heading", () => {
-    const md = htmlToMarkdown("<html><head><title>Hello</title></head><body><p>Hi</p></body></html>");
+    const md = htmlToMarkdown(
+      "<html><head><title>Hello</title></head><body><p>Hi</p></body></html>",
+    );
     expect(md).toContain("# Hello");
     expect(md).toContain("Hi");
   });
@@ -259,7 +266,9 @@ describe("createWebFetchTool", () => {
       expect(out.content).toBe("Greeting page that says hello.");
     }
     expect(provider.received).toHaveLength(1);
-    const userMsg = provider.received[0].messages.find((m) => m.role === "user");
+    const userMsg = provider.received[0].messages.find(
+      (m) => m.role === "user",
+    );
     expect(typeof userMsg?.content).toBe("string");
     expect(userMsg?.content as string).toContain("# Greet");
     expect(userMsg?.content as string).toContain("Hello world");
@@ -297,6 +306,74 @@ describe("createWebFetchTool", () => {
     if ("cached" in r2) expect(r2.cached).toBe(true);
   });
 
+  it("keeps caches isolated between provider/tool instances with the same provider name", async () => {
+    let hits = 0;
+    const fetchImpl = makeFetchImpl({
+      "https://example.com/profile": () => {
+        hits++;
+        return mockResponse({ body: "provider-specific source" });
+      },
+    });
+    const first = createWebFetchTool({
+      model: new StubProvider("answer from profile A"),
+      fetchImpl,
+    });
+    const second = createWebFetchTool({
+      model: new StubProvider("answer from profile B"),
+      fetchImpl,
+    });
+
+    const firstOut = await first.execute(
+      { url: "https://example.com/profile", prompt: "summarise" },
+      { agent: agentStub },
+    );
+    const secondOut = await second.execute(
+      { url: "https://example.com/profile", prompt: "summarise" },
+      { agent: agentStub },
+    );
+
+    expect(hits).toBe(2);
+    expect("content" in firstOut ? firstOut.content : "").toBe(
+      "answer from profile A",
+    );
+    expect("content" in secondOut ? secondOut.content : "").toBe(
+      "answer from profile B",
+    );
+  });
+
+  it("evicts least-recently-used entries when the per-instance cache is full", async () => {
+    const hits = new Map<string, number>();
+    const route = (url: string) => () => {
+      hits.set(url, (hits.get(url) ?? 0) + 1);
+      return mockResponse({ body: url });
+    };
+    const fetchImpl = makeFetchImpl({
+      "https://example.com/a": route("a"),
+      "https://example.com/b": route("b"),
+      "https://example.com/c": route("c"),
+    });
+    const tool = createWebFetchTool({
+      model: new StubProvider(),
+      fetchImpl,
+      maxCacheEntries: 2,
+    });
+
+    for (const suffix of ["a", "b", "c", "a"]) {
+      await tool.execute(
+        { url: `https://example.com/${suffix}`, prompt: "same prompt" },
+        { agent: agentStub },
+      );
+    }
+
+    expect(hits).toEqual(
+      new Map([
+        ["a", 2],
+        ["b", 1],
+        ["c", 1],
+      ]),
+    );
+  });
+
   it("truncates over-long content before sending to the model", async () => {
     const longHtml = "<html><body>" + "x".repeat(200_000) + "</body></html>";
     const fetchImpl = makeFetchImpl({
@@ -324,10 +401,116 @@ describe("createWebFetchTool", () => {
     } else {
       throw new Error("expected success output");
     }
-    const userMsg = provider.received[0].messages.find((m) => m.role === "user");
+    const userMsg = provider.received[0].messages.find(
+      (m) => m.role === "user",
+    );
     const text = userMsg?.content as string;
     // System + Prompt boilerplate shouldn't bring us anywhere near 200k chars.
     expect(text.length).toBeLessThan(7000);
+  });
+
+  it("caps response bytes while streaming instead of buffering the entire body", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("0123456789"));
+        controller.enqueue(
+          new TextEncoder().encode("abcdefghijklmnopqrstuvwxyz"),
+        );
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = makeFetchImpl({
+      "https://example.com/huge": () =>
+        new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": "text/plain",
+            "content-length": "999999999",
+          },
+        }),
+    });
+    const provider = new StubProvider("bounded");
+    const tool = createWebFetchTool({
+      model: provider,
+      fetchImpl,
+      maxDownloadBytes: 12,
+    });
+
+    const out = await tool.execute(
+      { url: "https://example.com/huge", prompt: "read" },
+      { agent: agentStub },
+    );
+
+    expect("truncated" in out && out.truncated).toBe(true);
+    expect(cancelled).toBe(true);
+    const userMessage = provider.received[0].messages.find(
+      (message) => message.role === "user",
+    );
+    expect(userMessage?.content as string).toContain("0123456789ab");
+    expect(userMessage?.content as string).not.toContain("cdef");
+  });
+
+  it("aborts a body that stalls after response headers", async () => {
+    let readStartedResolve!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      readStartedResolve = resolve;
+    });
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        readStartedResolve();
+        return new Promise<void>(() => {});
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = makeFetchImpl({
+      "https://example.com/stalled": () => new Response(body, { status: 200 }),
+    });
+    const provider = new StubProvider();
+    const tool = createWebFetchTool({ model: provider, fetchImpl });
+    const controller = new AbortController();
+
+    const pending = tool.execute(
+      { url: "https://example.com/stalled", prompt: "read" },
+      { agent: agentStub, signal: controller.signal },
+    );
+    await readStarted;
+    controller.abort();
+    const out = await pending;
+
+    expect("error" in out ? out.error : "").toMatch(/aborted by parent/);
+    expect(cancelled).toBe(true);
+    expect(provider.received).toHaveLength(0);
+  });
+
+  it("keeps the timeout active while consuming the response body", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise<void>(() => {});
+      },
+    });
+    const fetchImpl = makeFetchImpl({
+      "https://example.com/timeout": () => new Response(body, { status: 200 }),
+    });
+    const provider = new StubProvider();
+    const tool = createWebFetchTool({
+      model: provider,
+      fetchImpl,
+      defaultTimeout: 10,
+    });
+
+    const out = await tool.execute(
+      { url: "https://example.com/timeout", prompt: "read" },
+      { agent: agentStub },
+    );
+
+    expect("error" in out ? out.error : "").toMatch(/timed out/);
+    expect(provider.received).toHaveLength(0);
   });
 
   it("pretty-prints JSON content type", async () => {
@@ -347,7 +530,9 @@ describe("createWebFetchTool", () => {
       { agent: agentStub },
     );
 
-    const userMsg = provider.received[0].messages.find((m) => m.role === "user");
+    const userMsg = provider.received[0].messages.find(
+      (m) => m.role === "user",
+    );
     expect(userMsg?.content as string).toContain('"hello": "world"');
   });
 

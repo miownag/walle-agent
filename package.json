@@ -5,8 +5,12 @@
   "description": "Walle Agent SDK — micro-core + plugin architecture agent framework",
   "scripts": {
     "build": "pnpm -r build",
-    "test": "vitest run",
+    "desktop:dev": "pnpm --filter @walle-agent/desktop dev",
+    "desktop:build": "pnpm --filter @walle-agent/desktop build:standalone",
+    "test": "vitest run && pnpm --filter @walle-agent/desktop test",
+    "test:sdk": "vitest run",
     "test:watch": "vitest",
+    "typecheck": "pnpm --filter @walle-agent/desktop typecheck",
     "lint": "eslint packages/*/src/**/*.ts",
     "clean": "pnpm -r exec rm -rf dist",
     "stream": "pnpm --filter walle-agent-examples run stream",
@@ -44,7 +48,9 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild"
+      "electron",
+      "esbuild",
+      "node-pty"
     ]
   }
 }

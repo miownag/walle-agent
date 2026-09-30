@@ -14,10 +14,11 @@
 `@walle-agent/rag` 落地时与早期 spec 文本有几处差异，记录在此：
 
 1. **`loadDocs` 实际执行**：spec 在 `SimpleRAGPlugin.loadDocs` 留了
-   "简化实现省略 glob 细节"。当前实现用 `fs.readdir(root, { recursive: true })`
-   + 后缀匹配（patterns 里只取 `**/*.<ext>` 的扩展名做 suffix 过滤）。
-   不引入 minimatch / glob 依赖；如果用户需要复杂 pattern，自己派生 `RAGPlugin`
-   即可。
+   "简化实现省略 glob 细节"。当前实现使用自有目录 walker + 后缀匹配
+   （patterns 里只取 `**/*.<ext>` 的扩展名做 suffix 过滤），不引入 minimatch /
+   glob 依赖。walker 对每个 entry 执行 `lstat` / `realpath` 边界复验，并跳过所有
+   symbolic link，避免知识目录里的链接把 workspace 外文件索引进 prompt。
+   如果用户需要复杂 pattern，自己派生 `RAGPlugin` 即可。
 
 2. **`ingest` chunk id 用 `<docId>#<n>`**：spec 用 `crypto.randomUUID()` 给每个 chunk
    生成独立 id，会让用户无法通过原始文档 id 反查或删除。实现里改用

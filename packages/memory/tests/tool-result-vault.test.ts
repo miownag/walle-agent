@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ToolResultVault, tryDecodeEviction } from "../src/tool-result-vault.js";
+import {
+  ToolResultVault,
+  tryDecodeEviction,
+} from "../src/tool-result-vault.js";
 
 async function tmp(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "walle-vault-"));
@@ -62,7 +65,9 @@ describe("ToolResultVault", () => {
     const txt = await fs.readFile(path.join(dir, "tc-1.txt"), "utf-8");
     expect(txt).toBe("line1\nline2\nline3\nline4");
 
-    const meta = JSON.parse(await fs.readFile(path.join(dir, "tc-1.meta.json"), "utf-8"));
+    const meta = JSON.parse(
+      await fs.readFile(path.join(dir, "tc-1.meta.json"), "utf-8"),
+    );
     expect(meta.toolCallId).toBe("tc-1");
     expect(meta.size).toBe(envelope.size);
 

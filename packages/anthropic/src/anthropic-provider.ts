@@ -61,7 +61,10 @@ export class AnthropicProvider implements LLMProvider {
       };
     }
 
-    const response = await this.client.messages.create(params);
+    const response = await this.client.messages.create(
+      params,
+      request.signal ? { signal: request.signal } : undefined,
+    );
     return fromAnthropicResponse(response as Anthropic.Message);
   }
 
@@ -89,7 +92,10 @@ export class AnthropicProvider implements LLMProvider {
       };
     }
 
-    const stream = this.client.messages.stream(params);
+    const stream = this.client.messages.stream(
+      params,
+      request.signal ? { signal: request.signal } : undefined,
+    );
 
     yield* transformAnthropicStream(stream);
   }

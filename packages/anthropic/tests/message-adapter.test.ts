@@ -3,8 +3,17 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { toAnthropicMessages, fromAnthropicResponse } from "../src/message-adapter.js";
-import type { ModelMessage, ThinkingBlock, ContentBlock } from "@walle-agent/core";
+import {
+  toAnthropicMessages,
+  fromAnthropicResponse,
+  transformAnthropicStream,
+} from "../src/message-adapter.js";
+import type {
+  ModelMessage,
+  ThinkingBlock,
+  ContentBlock,
+  LLMStreamChunk,
+} from "@walle-agent/core";
 
 describe("Anthropic message-adapter — ThinkingBlock round-trip", () => {
   it("toAnthropicMessages preserves signed thinking block before text", () => {
@@ -13,7 +22,11 @@ describe("Anthropic message-adapter — ThinkingBlock round-trip", () => {
       {
         role: "assistant",
         content: [
-          { type: "thinking", thinking: "user greeted", signature: "sig-abc" } satisfies ThinkingBlock,
+          {
+            type: "thinking",
+            thinking: "user greeted",
+            signature: "sig-abc",
+          } satisfies ThinkingBlock,
           { type: "text", text: "hello there" },
         ],
       },
@@ -36,7 +49,10 @@ describe("Anthropic message-adapter — ThinkingBlock round-trip", () => {
       {
         role: "assistant",
         content: [
-          { type: "thinking", thinking: "no signature" } satisfies ThinkingBlock,
+          {
+            type: "thinking",
+            thinking: "no signature",
+          } satisfies ThinkingBlock,
           { type: "text", text: "visible" },
         ],
       },
@@ -55,7 +71,11 @@ describe("Anthropic message-adapter — ThinkingBlock round-trip", () => {
       {
         role: "assistant",
         content: [
-          { type: "thinking", thinking: "", data: "opaque-blob" } satisfies ThinkingBlock,
+          {
+            type: "thinking",
+            thinking: "",
+            data: "opaque-blob",
+          } satisfies ThinkingBlock,
           { type: "text", text: "answer" },
         ],
       },
@@ -63,7 +83,10 @@ describe("Anthropic message-adapter — ThinkingBlock round-trip", () => {
 
     const { messages } = toAnthropicMessages(history);
     const assistant = messages[0] as any;
-    expect(assistant.content[0]).toEqual({ type: "redacted_thinking", data: "opaque-blob" });
+    expect(assistant.content[0]).toEqual({
+      type: "redacted_thinking",
+      data: "opaque-blob",
+    });
   });
 
   it("fromAnthropicResponse stores thinking signature on ThinkingBlock", () => {
@@ -83,5 +106,202 @@ describe("Anthropic message-adapter — ThinkingBlock round-trip", () => {
     const thinking = blocks.find((b) => b.type === "thinking") as ThinkingBlock;
     expect(thinking.thinking).toBe("deep thought");
     expect(thinking.signature).toBe("sig-xyz");
+  });
+
+  it("includes cache reads and writes in non-streaming input usage", () => {
+    const response = {
+      content: [{ type: "text", text: "done" }],
+      usage: {
+        input_tokens: 20,
+        output_tokens: 5,
+        cache_read_input_tokens: 60,
+        cache_creation_input_tokens: 10,
+      },
+    } as any;
+    expect(fromAnthropicResponse(response).usage).toMatchObject({
+      promptTokens: 90,
+      completionTokens: 5,
+      totalTokens: 95,
+      cacheReadTokens: 60,
+      cacheWriteTokens: 10,
+    });
+  });
+
+  it("merges streaming output usage without losing input or cache tokens", async () => {
+    async function* src(): AsyncGenerator<any> {
+      yield {
+        type: "message_start",
+        message: {
+          usage: {
+            input_tokens: 120,
+            output_tokens: 1,
+            cache_read_input_tokens: 80,
+            cache_creation_input_tokens: 12,
+          },
+        },
+      };
+      yield {
+        type: "content_block_delta",
+        delta: { type: "text_delta", text: "done" },
+      };
+      yield {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { output_tokens: 9 },
+      };
+      yield { type: "message_stop" };
+    }
+
+    const chunks: LLMStreamChunk[] = [];
+    for await (const chunk of transformAnthropicStream(src())) {
+      chunks.push(chunk);
+    }
+
+    const completion = chunks.find(
+      (chunk) => chunk.type === "message_complete",
+    );
+    expect(completion).toMatchObject({
+      type: "message_complete",
+      usage: {
+        promptTokens: 212,
+        completionTokens: 9,
+        totalTokens: 221,
+        cacheReadTokens: 80,
+        cacheWriteTokens: 12,
+      },
+    });
+  });
+});
+
+describe("Anthropic message-adapter — user image content", () => {
+  it("maps text, base64 images, and SDK-supported URL images without forwarding internal blocks", () => {
+    const content: ContentBlock[] = [
+      { type: "text", text: "Compare these images" },
+      { type: "thinking", thinking: "internal-only" },
+      {
+        type: "tool_use",
+        id: "tool-1",
+        name: "inspect_image",
+        input: {},
+      },
+      {
+        type: "tool_result",
+        toolUseId: "tool-1",
+        content: "internal tool result",
+      },
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          mediaType: "image/png",
+          data: "iVBORw0KGgo=",
+        },
+      },
+      {
+        type: "image",
+        source: {
+          type: "url",
+          url: "https://images.example.com/sample.webp",
+        },
+      },
+      { type: "text", text: "Focus on the layout." },
+    ];
+
+    const { messages } = toAnthropicMessages([{ role: "user", content }]);
+
+    expect(messages[0]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "Compare these images" },
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/png",
+            data: "iVBORw0KGgo=",
+          },
+        },
+        {
+          type: "image",
+          source: {
+            type: "url",
+            url: "https://images.example.com/sample.webp",
+          },
+        },
+        { type: "text", text: "Focus on the layout." },
+      ],
+    });
+  });
+
+  it("keeps system, assistant, and tool content text-only", () => {
+    const image: ContentBlock = {
+      type: "image",
+      source: {
+        type: "url",
+        url: "https://images.example.com/not-forwarded.png",
+      },
+    };
+    const { system, messages } = toAnthropicMessages([
+      {
+        role: "system",
+        content: [image, { type: "text", text: "system text" }],
+      },
+      {
+        role: "assistant",
+        content: [image, { type: "text", text: "assistant text" }],
+      },
+      {
+        role: "tool",
+        toolCallId: "tool-1",
+        content: [image, { type: "text", text: "tool text" }],
+      },
+    ]);
+
+    expect(system).toBe("system text");
+    expect((messages[0] as any).content).toEqual([
+      { type: "text", text: "assistant text" },
+    ]);
+    expect((messages[1] as any).content).toEqual([
+      {
+        type: "tool_result",
+        tool_use_id: "tool-1",
+        content: "tool text",
+      },
+    ]);
+  });
+
+  it.each([
+    {
+      name: "unsupported media type",
+      source: {
+        type: "base64",
+        mediaType: "image/svg+xml",
+        data: "PHN2Zz4=",
+      },
+      error: "unsupported media type",
+    },
+    {
+      name: "malformed base64",
+      source: {
+        type: "base64",
+        mediaType: "image/jpeg",
+        data: "not-base64!",
+      },
+      error: "invalid base64 data",
+    },
+    {
+      name: "unsafe URL scheme",
+      source: { type: "url", url: "data:image/png;base64,iVBORw0KGgo=" },
+      error: "must use an HTTP(S) URL without credentials",
+    },
+  ])("rejects $name", ({ source, error }) => {
+    expect(() =>
+      toAnthropicMessages([
+        {
+          role: "user",
+          content: [{ type: "image", source } as ContentBlock],
+        },
+      ]),
+    ).toThrow(error);
   });
 });

@@ -16,7 +16,11 @@ export interface MemoryStore {
   update(id: string, patch: Partial<MemoryItem>): Promise<void>;
   delete(id: string): Promise<void>;
   search(query: MemoryQuery): Promise<MemoryItem[]>;
-  list(options?: { scope?: MemoryScope; limit?: number; offset?: number }): Promise<MemoryItem[]>;
+  list(options?: {
+    scope?: MemoryScope;
+    limit?: number;
+    offset?: number;
+  }): Promise<MemoryItem[]>;
 }
 
 export class FileMemoryStore implements MemoryStore {
@@ -33,7 +37,9 @@ export class FileMemoryStore implements MemoryStore {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
 
     if (existsSync(this.filePath)) {
-      const rl = readline.createInterface({ input: createReadStream(this.filePath) });
+      const rl = readline.createInterface({
+        input: createReadStream(this.filePath),
+      });
       for await (const line of rl) {
         if (!line.trim()) continue;
         try {
@@ -78,9 +84,11 @@ export class FileMemoryStore implements MemoryStore {
     let items = [...this.memories.values()];
 
     if (query.scope) items = items.filter((i) => i.scope === query.scope);
-    if (query.types?.length) items = items.filter((i) => query.types!.includes(i.type));
+    if (query.types?.length)
+      items = items.filter((i) => query.types!.includes(i.type));
     if (query.userId) items = items.filter((i) => i.userId === query.userId);
-    if (query.sessionId) items = items.filter((i) => i.sessionId === query.sessionId);
+    if (query.sessionId)
+      items = items.filter((i) => i.sessionId === query.sessionId);
 
     if (query.text && query.text.trim()) {
       const q = query.text;
@@ -97,7 +105,9 @@ export class FileMemoryStore implements MemoryStore {
         .map((x) => x.item);
     } else {
       // No query text: sort by createdAt desc
-      items = items.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+      items = items.sort((a, b) =>
+        (b.createdAt || "").localeCompare(a.createdAt || ""),
+      );
     }
 
     return items.slice(0, query.topK ?? 10);
@@ -117,7 +127,9 @@ export class FileMemoryStore implements MemoryStore {
   }
 
   private async rewrite(): Promise<void> {
-    const lines = [...this.memories.values()].map((i) => JSON.stringify(i)).join("\n");
+    const lines = [...this.memories.values()]
+      .map((i) => JSON.stringify(i))
+      .join("\n");
     const payload = lines.length > 0 ? lines + "\n" : "";
     await fs.writeFile(this.filePath, payload);
   }

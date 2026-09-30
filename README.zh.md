@@ -54,7 +54,7 @@ const result = await agent.run("帮我总结一下部署 runbook", {
 pnpm add @walle-agent/core @walle-agent/openai
 # 按需安装插件：
 pnpm add @walle-agent/memory @walle-agent/skills @walle-agent/evolution
-pnpm add @walle-agent/sandbox @walle-agent/permissions
+pnpm add @walle-agent/sandbox
 pnpm add @walle-agent/mcp @walle-agent/rag @walle-agent/trace @walle-agent/team
 ```
 
@@ -80,6 +80,16 @@ pnpm add @walle-agent/mcp @walle-agent/rag @walle-agent/trace @walle-agent/team
 
 不在本仓库内的外部 adapter：`@walle-agent/rag-qdrant`、`@walle-agent/trace-otel`，
 都实现本仓库定义的同一组插件接口。
+
+---
+
+## 应用
+
+| 应用 | 作用 | 规格 |
+|---|---|---|
+| [`@walle-agent/desktop`](./apps/desktop) | Local-only Electron Coding Agent，支持多会话流式执行、workspace 工具、分屏、内置浏览器、Skills、沙箱、MCP 与 Evolution 管理 | [23](./docs/23-desktop-app.md) |
+
+在 monorepo 根目录运行 `pnpm desktop:dev` 即可启动。
 
 ---
 
@@ -379,15 +389,17 @@ MODEL=gpt-4o-mini
 
 ```
 walle-agent/
+├── apps/
+│   └── desktop/               # Electron + React 本地 Coding Agent
 ├── packages/                    # 11 个 SDK 包，peer-dep @walle-agent/core
 │   ├── core/                    # 微核心：Agent、运行时、events、tools …
 │   ├── openai/  anthropic/      # LLM provider
 │   ├── memory/  skills/  evolution/   # 自进化栈
-│   ├── mcp/  sandbox/  permissions    # 外部工具 + 安全
+│   ├── mcp/  sandbox/          # 外部工具 + 执行边界
 │   ├── team/                    # 多 Agent 编排
 │   └── rag/  trace/             # 知识 + 可观测
 ├── examples/                    # 可运行的示例（见上方表格）
-├── docs/                        # Spec-Driven 设计文档（INDEX.md → 01..20）
+├── docs/                        # Spec-Driven 设计文档（INDEX.md → 01..23）
 └── plans/                       # 每个切片的 requirements / design / tasks / testing
 ```
 
@@ -400,6 +412,8 @@ pnpm install
 pnpm test            # vitest 跑所有包
 pnpm build           # tsup 构建所有包
 pnpm --filter @walle-agent/core test
+pnpm desktop:dev     # 先构建 SDK，再启动 Walle Desktop
+pnpm desktop:build   # Electron/Vite 生产构建
 ```
 
 仓库遵循 **Spec-Driven Development**：改包之前先读对应的 `docs/*.md`，
