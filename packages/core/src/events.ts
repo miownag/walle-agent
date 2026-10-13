@@ -14,6 +14,12 @@ export type RunStatus = "completed" | "user-cancelled" | "error";
 
 export interface AgentEventMap {
   run_start: { input: AgentInput; runId: string; sessionId?: string };
+  input_steered: {
+    input: AgentInput;
+    message: ModelMessage;
+    runId: string;
+    sessionId?: string;
+  };
   run_end: {
     messages: ModelMessage[];
     runId: string;

@@ -6,6 +6,13 @@ import {
 } from "../defaults";
 
 describe("settings normalization", () => {
+  it("persists Full access without changing configured deny rules", () => {
+    const settings = normalizeSettings({
+      permissions: { mode: "full-access", denyTools: ["shell"] },
+    });
+    expect(settings.permissions.mode).toBe("full-access");
+    expect(settings.permissions.denyTools).toEqual(["shell"]);
+  });
   it("fills defaults, clamps numbers, and removes invalid array values", () => {
     const settings = normalizeSettings({
       appearance: { theme: "neon", fontSize: 999 },

@@ -168,13 +168,35 @@ describe("Base UI grouped dropdown integration", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: /model-a/i }));
-    expect(await screen.findByText("Provider & model")).toBeInTheDocument();
+    expect(await screen.findByText("model-b")).toBeInTheDocument();
+    expect(screen.queryByText("Provider & model")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Manage providers in Settings"),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("model-b"));
     await waitFor(() =>
       expect(screen.getByTestId("selected-provider")).toHaveTextContent(
         "provider-b",
       ),
     );
+  });
+
+  it("selects Full Access without a menu heading", async () => {
+    render(<MenuHarness />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /Select approval policy/ }),
+    );
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Full Access" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("selected-permission-mode")).toHaveTextContent(
+        "full-access",
+      ),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Select approval policy, current Full Access",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("selects the approval policy through the real Base UI radio menu", async () => {
@@ -186,7 +208,10 @@ describe("Base UI grouped dropdown integration", () => {
       }),
     );
 
-    expect(await screen.findByText("Approval policy")).toBeInTheDocument();
+    expect(screen.queryByText("Approval policy")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitemradio", { name: "Full Access" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("menuitemradio", { name: "Ask before actions" }),
     ).toHaveAttribute("aria-checked", "true");

@@ -33,6 +33,56 @@ afterEach(async () => {
 });
 
 describe("ProviderService endpoint credential boundaries", () => {
+  it("accepts optional labels, rejects duplicate model values, and validates the default", async () => {
+    const providers = await service();
+    const input = {
+      name: "Ferry",
+      kind: "anthropic" as const,
+      model: "one",
+      baseUrl: "http://127.0.0.1:8790",
+      apiKey: "ferry",
+      models: [
+        { value: "one" },
+        { label: "Second", value: "two", description: "Quick responses" },
+      ],
+    };
+    const settings = await providers.upsert(input);
+    expect(settings.providers[0].models).toEqual([
+      { label: "one", value: "one", description: "" },
+      { label: "Second", value: "two", description: "Quick responses" },
+    ]);
+    await expect(
+      providers.upsert({
+        ...input,
+        models: [{ value: "one" }, { value: "one" }],
+      }),
+    ).rejects.toThrow(/unique/);
+    await expect(
+      providers.upsert({ ...input, model: "missing" }),
+    ).rejects.toThrow(/Default model/);
+  });
+
+  it("does not forward the Anthropic environment key to a custom endpoint", async () => {
+    const previous = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "vendor-secret";
+    try {
+      const providers = await service();
+      const settings = await providers.upsert({
+        name: "Gateway",
+        kind: "anthropic",
+        model: "one",
+        baseUrl: "http://127.0.0.1:8790",
+      });
+      expect(settings.providers[0].hasApiKey).toBe(false);
+      expect(() => providers.createModel(settings.providers[0].id)).toThrow(
+        /Add an API key/,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previous;
+    }
+  });
+
   it("never offers the generic OpenAI environment key to compatible endpoints", async () => {
     const previous = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "real-openai-secret";
@@ -99,4 +149,48 @@ describe("ProviderService endpoint credential boundaries", () => {
         .sort(),
     ).toEqual(["First", "Second"]);
   });
+});
+
+it("preserves provider positions across edits and default changes", async () => {
+  const providers = await service();
+  const first = (
+    await providers.upsert({ name: "First", kind: "anthropic", model: "one" })
+  ).providers[0];
+  const secondSettings = await providers.upsert({
+    name: "Second",
+    kind: "anthropic",
+    model: "two",
+  });
+  const second = secondSettings.providers[1];
+  const updated = await providers.upsert({
+    id: first.id,
+    name: "Renamed",
+    kind: "anthropic",
+    model: "updated",
+    isDefault: true,
+  });
+  expect(updated.providers.map((provider) => provider.id)).toEqual([
+    first.id,
+    second.id,
+  ]);
+  expect(updated.providers[0]).toMatchObject({
+    name: "Renamed",
+    model: "updated",
+    isDefault: true,
+  });
+  const switched = await providers.upsert({
+    id: second.id,
+    name: "Second",
+    kind: "anthropic",
+    model: "two",
+    isDefault: true,
+  });
+  expect(switched.providers.map((provider) => provider.id)).toEqual([
+    second.id,
+    first.id,
+  ]);
+  expect(switched.providers.map((provider) => provider.isDefault)).toEqual([
+    true,
+    false,
+  ]);
 });

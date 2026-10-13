@@ -8,7 +8,7 @@
   "scripts": {
     "postinstall": "node scripts/fix-node-pty-permissions.mjs",
     "build:sdk": "pnpm --dir ../.. --filter '@walle-agent/desktop^...' build",
-    "dev": "pnpm run build:sdk && electron-vite dev",
+    "dev": "pnpm run build:sdk && electron-vite dev --watch",
     "preview": "electron-vite preview",
     "build": "electron-vite build",
     "build:standalone": "pnpm run build:sdk && pnpm run build",

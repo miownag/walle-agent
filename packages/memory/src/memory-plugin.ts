@@ -188,6 +188,18 @@ export class MemoryPlugin implements WallePlugin {
       }
     });
 
+    ctx.events.on("input_steered", async ({ message, runId }) => {
+      const state = this.runs.get(runId);
+      if (state?.sessionId && this.sessionsEnabled && this.sessionLog) {
+        await this.sessionLog.appendMessage(
+          state.sessionId,
+          runId,
+          state.turn++,
+          await this.prepareMessageForDisk(message),
+        );
+      }
+    });
+
     ctx.registerHook("afterModelCall", async ({ message }) => {
       const runId = this.findActiveRunId();
       if (!runId) return;

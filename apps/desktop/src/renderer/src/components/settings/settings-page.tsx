@@ -5,6 +5,8 @@ import {
   IconCheck,
   IconCpu,
   IconDatabase,
+  IconEye,
+  IconEyeOff,
   IconInfoCircle,
   IconPalette,
   IconPlugConnected,
@@ -19,6 +21,12 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -38,11 +46,15 @@ import type {
   DesktopApi,
   McpServerSettings,
   ProviderKind,
+  PermissionMode,
+  ProviderModel,
   ProviderProfile,
   ProviderProfileInput,
   SkillSummary,
   ThemeMode,
 } from "@shared/contracts";
+
+import { providerModels } from "@shared/provider-models";
 
 type SettingsPage =
   | "appearance"
@@ -266,6 +278,25 @@ function AppearancePage({
             }
           />
         </SettingsRow>
+        <SettingsRow
+          label="Follow-up behavior"
+          description="Choose how messages are sent while Walle is working."
+        >
+          <Select
+            value={settings.followUpMode ?? "queue"}
+            onValueChange={(value) =>
+              void onPatch({ followUpMode: value as "queue" | "steer" })
+            }
+          >
+            <SelectTrigger className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="queue">Queue</SelectItem>
+              <SelectItem value="steer">Steer</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
         <ToggleRow
           label="Reduce motion"
           description="Minimize streaming, pane, and disclosure animations."
@@ -280,6 +311,7 @@ function AppearancePage({
 }
 
 interface ProviderDraft {
+  models: ProviderModel[];
   id?: string;
   name: string;
   kind: ProviderKind;
@@ -295,6 +327,9 @@ function providerDraft(provider?: ProviderProfile): ProviderDraft {
     name: provider?.name ?? "",
     kind: provider?.kind ?? "openai",
     model: provider?.model ?? "",
+    models: provider
+      ? providerModels(provider).map((model) => ({ ...model }))
+      : [{ label: "", value: "", description: "" }],
     baseUrl: provider?.baseUrl ?? "",
     apiKey: "",
     isDefault: provider?.isDefault ?? false,
@@ -312,13 +347,42 @@ function ProvidersPage({
   const [editing, setEditing] = useState<ProviderDraft | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [modelError, setModelError] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const changeModel = (index: number, patch: Partial<ProviderModel>) => {
+    if (!editing) return;
+    const previous = editing.models[index];
+    const models = editing.models.map((model, i) =>
+      i === index ? { ...model, ...patch } : model,
+    );
+    const model =
+      !editing.model ||
+      (patch.value !== undefined && editing.model === previous.value)
+        ? (patch.value ?? models[index].value)
+        : editing.model;
+    setEditing({ ...editing, models, model });
+    setModelError("");
+  };
   const save = async () => {
     if (!editing?.name.trim() || !editing.model.trim() || submitting) return;
+    const models = editing.models.map((entry) => ({
+      label: entry.label?.trim() || "",
+      value: entry.value.trim(),
+      description: entry.description?.trim() || "",
+    }));
+    if (
+      models.some((entry) => !entry.value) ||
+      new Set(models.map((entry) => entry.value)).size !== models.length
+    ) {
+      setModelError("Each model needs a unique, non-empty value.");
+      return;
+    }
     const input: ProviderProfileInput = {
       id: editing.id,
       name: editing.name.trim(),
       kind: editing.kind,
       model: editing.model.trim(),
+      models,
       baseUrl: editing.baseUrl.trim() || undefined,
       isDefault: editing.isDefault,
     };
@@ -353,7 +417,11 @@ function ProvidersPage({
         <Button
           size="sm"
           disabled={submitting || Boolean(deletingId)}
-          onClick={() => setEditing(providerDraft())}
+          onClick={() => {
+            setModelError("");
+            setShowApiKey(false);
+            setEditing(providerDraft());
+          }}
         >
           <IconPlus /> Add provider
         </Button>
@@ -377,7 +445,9 @@ function ProvidersPage({
                 )}
               </div>
               <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
-                {provider.model} · {provider.kind}
+                {providerModels(provider).length} model
+                {providerModels(provider).length === 1 ? "" : "s"} ·{" "}
+                {provider.kind}
                 {provider.hasApiKey
                   ? ` · key ${provider.apiKeyHint ?? "saved"}`
                   : " · no key"}
@@ -387,7 +457,11 @@ function ProvidersPage({
               size="sm"
               variant="ghost"
               disabled={submitting || Boolean(deletingId)}
-              onClick={() => setEditing(providerDraft(provider))}
+              onClick={() => {
+                setModelError("");
+                setShowApiKey(false);
+                setEditing(providerDraft(provider));
+              }}
             >
               Edit
             </Button>
@@ -450,19 +524,34 @@ function ProvidersPage({
               </Select>
             </Label>
             <Label className="flex-col items-stretch gap-1.5 text-[11px]">
-              Model
-              <Input
+              Default model
+              <Select
                 value={editing.model}
-                placeholder="gpt-5"
-                onChange={(event) =>
-                  setEditing({ ...editing, model: event.currentTarget.value })
+                disabled={!editing.models.some((entry) => entry.value.trim())}
+                onValueChange={(model) =>
+                  setEditing({ ...editing, model: model ?? "" })
                 }
-              />
+              >
+                <SelectTrigger className="w-full" aria-label="Default model">
+                  <SelectValue placeholder="Add a model below" />
+                </SelectTrigger>
+                <SelectContent>
+                  {editing.models
+                    .filter((entry) => entry.value.trim())
+                    .map((entry, index) => (
+                      <SelectItem key={index} value={entry.value}>
+                        {entry.label || entry.value}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
             </Label>
             <Label className="flex-col items-stretch gap-1.5 text-[11px]">
-              Base URL{" "}
-              <span className="font-normal text-muted-foreground">
-                optional
+              <span className="flex items-center justify-between gap-2">
+                <span>Base URL</span>
+                <span className="shrink-0 whitespace-nowrap font-normal text-muted-foreground">
+                  optional
+                </span>
               </span>
               <Input
                 value={editing.baseUrl}
@@ -477,15 +566,142 @@ function ProvidersPage({
               <span className="font-normal text-muted-foreground">
                 leave blank to keep the saved key
               </span>
-              <Input
-                type="password"
-                value={editing.apiKey}
-                placeholder="••••••••"
-                onChange={(event) =>
-                  setEditing({ ...editing, apiKey: event.currentTarget.value })
-                }
-              />
+              <InputGroup>
+                <InputGroupInput
+                  aria-label="API key"
+                  type={showApiKey ? "text" : "password"}
+                  value={editing.apiKey}
+                  placeholder="••••••••"
+                  onChange={(event) =>
+                    setEditing({
+                      ...editing,
+                      apiKey: event.currentTarget.value,
+                    })
+                  }
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupButton
+                    size="icon-xs"
+                    aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                    title={showApiKey ? "Hide API key" : "Show API key"}
+                    aria-pressed={showApiKey}
+                    onClick={() => setShowApiKey((visible) => !visible)}
+                  >
+                    {showApiKey ? <IconEyeOff /> : <IconEye />}
+                  </InputGroupButton>
+                </InputGroupAddon>
+              </InputGroup>
             </Label>
+            <div className="col-span-2 space-y-3 rounded-lg border bg-muted/20 p-3 max-[700px]:col-span-1">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-medium">Models</div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                    Choose these models from the conversation toolbar.
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    setEditing({
+                      ...editing,
+                      models: [
+                        ...editing.models,
+                        { label: "", value: "", description: "" },
+                      ],
+                    })
+                  }
+                >
+                  <IconPlus /> Add model
+                </Button>
+              </div>
+              {editing.models.map((entry, index) => (
+                <div
+                  key={index}
+                  className="space-y-2 rounded-md border bg-background p-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-medium text-muted-foreground">
+                      Model {index + 1}
+                    </span>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label={`Remove model ${index + 1}`}
+                      disabled={editing.models.length === 1}
+                      onClick={() => {
+                        const models = editing.models.filter(
+                          (_, i) => i !== index,
+                        );
+                        setEditing({
+                          ...editing,
+                          models,
+                          model:
+                            editing.model === entry.value
+                              ? models[0].value
+                              : editing.model,
+                        });
+                        setModelError("");
+                      }}
+                    >
+                      <IconTrash />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 max-[700px]:grid-cols-1">
+                    <Label className="flex-col items-stretch gap-1.5 text-[11px]">
+                      <span className="flex items-center justify-between gap-2">
+                        <span>Label</span>
+                        <span className="whitespace-nowrap font-normal text-muted-foreground">
+                          optional
+                        </span>
+                      </span>
+                      <Input
+                        aria-label={`Model ${index + 1} label`}
+                        value={entry.label ?? ""}
+                        placeholder="Defaults to value"
+                        onChange={(event) =>
+                          changeModel(index, {
+                            label: event.currentTarget.value,
+                          })
+                        }
+                      />
+                    </Label>
+                    <Label className="flex-col items-stretch gap-1.5 text-[11px]">
+                      Value
+                      <Input
+                        aria-label={`Model ${index + 1} value`}
+                        value={entry.value}
+                        placeholder="Model ID"
+                        onChange={(event) =>
+                          changeModel(index, {
+                            value: event.currentTarget.value,
+                          })
+                        }
+                      />
+                    </Label>
+                  </div>
+                  <Label className="flex-col items-stretch gap-1.5 text-[11px]">
+                    Description
+                    <Input
+                      aria-label={`Model ${index + 1} description`}
+                      value={entry.description ?? ""}
+                      placeholder="Optional description shown below the model name"
+                      onChange={(event) =>
+                        changeModel(index, {
+                          description: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </Label>
+                </div>
+              ))}
+              {modelError && (
+                <p role="alert" className="text-xs text-destructive">
+                  {modelError}
+                </p>
+              )}
+            </div>
             <label className="col-span-2 flex items-center gap-2 text-[11px] max-[700px]:col-span-1">
               <Switch
                 checked={editing.isDefault}
@@ -623,18 +839,30 @@ function SandboxPage({
             onValueChange={(mode) =>
               void onPatch({
                 permissions: {
-                  mode: mode as "auto" | "ask" | "deny-high-risk",
+                  mode: mode as PermissionMode,
                 },
               })
             }
           >
-            <SelectTrigger className="w-44">
+            <SelectTrigger
+              className={cn(
+                "w-44",
+                settings.permissions.mode === "full-access" &&
+                  "bg-red-50 text-red-400 dark:bg-red-950/30 dark:text-red-300",
+              )}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ask">Ask before actions</SelectItem>
               <SelectItem value="auto">Approve automatically</SelectItem>
               <SelectItem value="deny-high-risk">Deny high-risk</SelectItem>
+              <SelectItem
+                value="full-access"
+                className="text-red-400 dark:text-red-300"
+              >
+                Full Access
+              </SelectItem>
             </SelectContent>
           </Select>
         </SettingsRow>

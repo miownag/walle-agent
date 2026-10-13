@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { hasRunningRun } from "@/state/agent-stream";
 import type {
   ContextCommand,
+  FollowUpMode,
   ImageAttachmentInput,
   PermissionMode,
   ProviderProfile,
@@ -88,6 +89,8 @@ export interface ThreadPaneProps {
   focused: boolean;
   split: boolean;
   providers: ProviderProfile[];
+  followUpMode?: FollowUpMode;
+  onFollowUpModeChange?: (mode: FollowUpMode) => Promise<void>;
   permissionMode: PermissionMode;
   maxContextTokens: number;
   onFocus: () => void;
@@ -97,10 +100,15 @@ export interface ThreadPaneProps {
     displayPrompt?: string,
     imageAttachments?: SavedImageAttachment[],
     displayParts?: UserMessagePart[],
+    mode?: FollowUpMode,
+  ) => Promise<void>;
+  onPendingMessageAction?: (
+    id: string,
+    action: "remove" | "steer" | "send",
   ) => Promise<void>;
   onStop: () => Promise<void>;
   onSlashCommand: (command: ContextCommand) => Promise<void>;
-  onProviderChange: (providerId: string) => Promise<void>;
+  onProviderChange: (providerId: string, model?: string) => Promise<void>;
   onPermissionModeChange: (mode: PermissionMode) => Promise<void>;
   onSearchWorkspaceFiles?: (
     threadId: string,
@@ -130,11 +138,14 @@ export function ThreadPane({
   split,
   providers,
   permissionMode,
+  followUpMode,
+  onFollowUpModeChange,
   maxContextTokens,
   onFocus,
   onClose,
   onSend,
   onStop,
+  onPendingMessageAction,
   onSlashCommand,
   onProviderChange,
   onPermissionModeChange,
@@ -576,9 +587,13 @@ export function ThreadPane({
         thread={thread}
         providers={providers}
         permissionMode={permissionMode}
+        followUpMode={followUpMode}
+        onFollowUpModeChange={onFollowUpModeChange}
         contextWindow={timeline?.contextWindow}
         maxContextTokens={maxContextTokens}
         running={running}
+        pendingMessages={timeline?.pendingMessages}
+        onPendingMessageAction={onPendingMessageAction}
         focused={focused}
         onSend={onSend}
         onStop={onStop}

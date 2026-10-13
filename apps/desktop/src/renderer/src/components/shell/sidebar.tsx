@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   IconArchive,
   IconArchiveOff,
@@ -187,6 +187,44 @@ export function Sidebar({
     () => new Set(),
   );
 
+  const [savedWorkspaceOrder, setSavedWorkspaceOrder] = useState<string[]>(
+    () => {
+      try {
+        const value: unknown = JSON.parse(
+          window.localStorage.getItem("walle.sidebar-workspace-order") ?? "[]",
+        );
+        return Array.isArray(value)
+          ? value.filter((root): root is string => typeof root === "string")
+          : [];
+      } catch {
+        return [];
+      }
+    },
+  );
+  const workspaceOrder = useMemo(() => {
+    const roots = new Set(savedWorkspaceOrder);
+    for (const thread of [...threads].sort(
+      (a, b) =>
+        a.createdAt.localeCompare(b.createdAt) ||
+        a.workspaceRoot.localeCompare(b.workspaceRoot),
+    ))
+      roots.add(thread.workspaceRoot);
+    if (draftWorkspaceRoot) roots.add(draftWorkspaceRoot);
+    return [...roots];
+  }, [savedWorkspaceOrder, threads, draftWorkspaceRoot]);
+  useEffect(() => {
+    if (workspaceOrder.length === savedWorkspaceOrder.length) return;
+    setSavedWorkspaceOrder(workspaceOrder);
+    try {
+      window.localStorage.setItem(
+        "walle.sidebar-workspace-order",
+        JSON.stringify(workspaceOrder),
+      );
+    } catch {
+      /* Storage may be unavailable. Keep the order for this window. */
+    }
+  }, [workspaceOrder, savedWorkspaceOrder]);
+
   const unreadIds = useMemo(() => new Set(unreadThreadIds), [unreadThreadIds]);
 
   const visibleThreads = useMemo(() => {
@@ -200,7 +238,10 @@ export function Sidebar({
           thread.workspaceName.toLocaleLowerCase().includes(needle) ||
           thread.lastMessage?.toLocaleLowerCase().includes(needle),
       )
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      .sort(
+        (a, b) =>
+          b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
+      );
   }, [query, showArchived, threads]);
 
   const pinned = visibleThreads.filter((thread) => thread.pinned);
@@ -239,7 +280,9 @@ export function Sidebar({
         unreadCount: 0,
       });
     }
-    return [...result.entries()];
+    return [...result.entries()].sort(
+      ([a], [b]) => workspaceOrder.indexOf(a) - workspaceOrder.indexOf(b),
+    );
   }, [
     activeIds,
     draftWorkspaceRoot,
@@ -247,6 +290,7 @@ export function Sidebar({
     showArchived,
     unreadIds,
     visibleThreads,
+    workspaceOrder,
   ]);
 
   const selectThread = (id: string) => {
@@ -315,15 +359,41 @@ export function Sidebar({
           data-slot="sidebar-content"
         >
           <div className="flex h-11 shrink-0 items-center gap-1 px-2.5">
-            <div
-              className="flex h-8 min-w-0 flex-1 items-center gap-2 px-2 text-sm font-semibold"
-              data-slot="sidebar-brand"
-            >
-              <span className="flex size-5 items-center justify-center rounded-[6px] bg-[var(--brand-soft)] text-[var(--brand)]">
-                <IconSparkles className="size-3.5" />
-              </span>
-              Walle
-            </div>
+            {searchOpen ? (
+              <div
+                role="search"
+                data-slot="sidebar-search"
+                className="min-w-0 flex-1"
+              >
+                <div className="relative">
+                  <IconSearch className="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    autoFocus
+                    value={query}
+                    onChange={(event) => setQuery(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        closeSearch();
+                      }
+                    }}
+                    placeholder="Search conversations"
+                    className="h-8 rounded-md border-sidebar-border/80 bg-background/90 pl-7 text-xs shadow-none"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div
+                className="flex h-8 min-w-0 flex-1 items-center gap-2 px-2 text-sm font-semibold"
+                data-slot="sidebar-brand"
+              >
+                <span className="flex size-5 items-center justify-center rounded-[6px] bg-[var(--brand-soft)] text-[var(--brand)]">
+                  <IconSparkles className="size-3.5" />
+                </span>
+                Walle
+              </div>
+            )}
+
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -350,31 +420,6 @@ export function Sidebar({
               <IconX />
             </Button>
           </div>
-
-          {searchOpen && (
-            <div
-              role="search"
-              data-slot="sidebar-search-popover"
-              className="absolute left-3 right-3 top-11 z-20 rounded-lg border border-sidebar-border/70 bg-sidebar/95 p-1.5 shadow-[0_8px_24px_-10px_rgba(15,23,42,0.28)] backdrop-blur-md"
-            >
-              <div className="relative">
-                <IconSearch className="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  autoFocus
-                  value={query}
-                  onChange={(event) => setQuery(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      closeSearch();
-                    }
-                  }}
-                  placeholder="Search conversations"
-                  className="h-8 rounded-md border-sidebar-border/80 bg-background/90 pl-7 text-xs shadow-none"
-                />
-              </div>
-            </div>
-          )}
 
           <nav
             className="shrink-0 space-y-0.5 px-2.5 pb-2"

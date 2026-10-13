@@ -9,7 +9,37 @@ import {
   IconChevronDown,
 } from "@tabler/icons-react";
 
-const Select = SelectPrimitive.Root;
+function Select<Value, Multiple extends boolean | undefined = false>({
+  children,
+  items,
+  ...props
+}: SelectPrimitive.Root.Props<Value, Multiple>) {
+  const options: { value: Value; label: React.ReactNode }[] = [];
+  const collect = (nodes: React.ReactNode) => {
+    React.Children.forEach(nodes, (child) => {
+      if (
+        !React.isValidElement<{ value: Value; children?: React.ReactNode }>(
+          child,
+        )
+      )
+        return;
+      if (child.type === SelectItem) {
+        options.push({ value: child.props.value, label: child.props.children });
+      } else if (child.type !== Select) {
+        collect(child.props.children);
+      }
+    });
+  };
+  collect(children);
+  return (
+    <SelectPrimitive.Root
+      {...props}
+      items={items ?? (options.length ? options : undefined)}
+    >
+      {children}
+    </SelectPrimitive.Root>
+  );
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (

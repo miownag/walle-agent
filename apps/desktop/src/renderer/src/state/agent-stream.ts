@@ -3,6 +3,8 @@ import type {
   AssistantTimelineItem,
   ContextWindowSnapshot,
   ProcessStep,
+  PendingMessage,
+  UserTimelineItem,
   ProcessStepStatus,
   ProcessStepType,
   ThreadTimeline,
@@ -346,6 +348,18 @@ function updateEventTimeline(
   timeline: ThreadTimeline,
   event: AgentEventEnvelope,
 ): ThreadTimeline {
+  if (event.type === "messages.pending")
+    return { ...timeline, pendingMessages: event.payload as PendingMessage[] };
+  if (event.type === "message.sent") {
+    const user = event.payload as UserTimelineItem;
+    if (timeline.items.some((item) => item.id === user.id)) return timeline;
+    const items = [...timeline.items];
+    const index = items.findIndex(
+      (item) => item.type === "assistant" && item.runId === event.runId,
+    );
+    items.splice(index < 0 ? items.length : index, 0, user);
+    return { ...timeline, items };
+  }
   if (event.type === "context.updated") {
     const incoming = snapshotFromEvent(event);
     return incoming

@@ -81,6 +81,7 @@ export interface ErrorEvent {
 
 export type AgentStreamEvent =
   | RunStartEvent
+  | { type: "input_steered"; input: AgentInput }
   | RunEndEvent
   | ModelCallStartEvent
   | ModelCallEndEvent

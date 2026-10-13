@@ -72,7 +72,7 @@ describe("ThreadTitleService", () => {
       "修复侧边栏搜索导致的布局跳动",
     );
 
-    expect(providers.createModel).toHaveBeenCalledWith("");
+    expect(providers.createModel).toHaveBeenCalledWith("", "");
     expect(chat).toHaveBeenCalledTimes(1);
     expect(chat).toHaveBeenCalledWith({
       messages: [

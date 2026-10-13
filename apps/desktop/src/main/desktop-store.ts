@@ -13,6 +13,7 @@ import type {
   UpdateThreadInput,
   UserMessagePart,
 } from "../shared/contracts";
+import { selectedProviderModel } from "../shared/provider-models";
 import { DEFAULT_SETTINGS, mergeSettings, normalizeSettings } from "./defaults";
 
 interface DesktopStateV1 {
@@ -255,6 +256,18 @@ function migrate(raw: unknown): DesktopStateV1 {
               .filter((item): item is TimelineItem => Boolean(item))
           : [],
         ...(contextWindow ? { contextWindow } : {}),
+        pendingMessages: Array.isArray(value.pendingMessages)
+          ? value.pendingMessages
+              .filter(
+                (message) =>
+                  message &&
+                  typeof message.id === "string" &&
+                  typeof message.prompt === "string" &&
+                  typeof message.displayPrompt === "string" &&
+                  Array.isArray(message.attachments),
+              )
+              .map((message) => ({ ...message, mode: "queue" as const }))
+          : [],
       };
     }
   }
@@ -348,7 +361,7 @@ export class DesktopStore {
       workspaceRoot: input.workspaceRoot,
       workspaceName: basename(input.workspaceRoot),
       providerProfileId: provider?.id ?? "",
-      model: provider?.model ?? "",
+      model: provider ? selectedProviderModel(provider, input.model) : "",
       pinned: false,
       archived: false,
       unread: false,
@@ -373,6 +386,15 @@ export class DesktopStore {
   ): Promise<ThreadRecord> {
     this.assertInitialized();
     const thread = this.requireThread(threadId);
+    const targetProviderId =
+      patch.providerProfileId ?? thread.providerProfileId;
+    const targetProvider = this.state.settings.providers.find(
+      (entry) => entry.id === targetProviderId,
+    );
+    if (targetProviderId && !targetProvider)
+      throw new Error(`Unknown provider profile: ${targetProviderId}`);
+    if (patch.model !== undefined && targetProvider)
+      selectedProviderModel(targetProvider, patch.model);
     if (typeof patch.title === "string" && patch.title.trim())
       thread.title = patch.title.trim();
     if (typeof patch.pinned === "boolean") thread.pinned = patch.pinned;

@@ -334,7 +334,7 @@ describe("AgentManager completion lifecycle", () => {
         }),
       ),
     );
-    expect(events[0]).toMatchObject({
+    expect(events.find((event) => event.type === "run.started")).toMatchObject({
       type: "run.started",
       payload: { prompt: "Please inspect @[src/agent.ts]" },
     });

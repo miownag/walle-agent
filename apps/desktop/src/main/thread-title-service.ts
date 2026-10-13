@@ -211,6 +211,7 @@ export class ThreadTitleService {
   ): Promise<ThreadRecord | null> {
     const { model } = this.providers.createModel(
       initialThread.providerProfileId,
+      initialThread.model,
     );
     const response = await model.chat({
       messages: [

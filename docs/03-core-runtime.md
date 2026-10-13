@@ -541,3 +541,7 @@ export interface RunOptions {
   metadata?: Record<string, unknown>;
 }
 ```
+
+## Active-run guidance
+
+`agent.steer(input)` accepts string or AgentInput and returns whether the active run accepted it. Inputs pass through beforeInput middleware and enter the conversation at the next model boundary. Outstanding tool calls retain their paired results before guidance is inserted. The runtime emits input_steered with the processed input; its EventBus payload also includes the user ModelMessage for memory persistence. When idle or cancelled, steer returns false.

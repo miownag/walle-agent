@@ -15,6 +15,7 @@ import { toAnthropicMessages, toAnthropicTool, fromAnthropicResponse, transformA
 
 export interface AnthropicProviderConfig {
   apiKey?: string;
+  baseURL?: string;
   model: string;
   defaultMaxTokens?: number;
   thinking?: { enabled: boolean; budgetTokens?: number };
@@ -32,6 +33,7 @@ export class AnthropicProvider implements LLMProvider {
   constructor(config: AnthropicProviderConfig) {
     this.client = new Anthropic({
       apiKey: config.apiKey ?? process.env.ANTHROPIC_API_KEY,
+      baseURL: config.baseURL,
     });
     this.model = config.model;
     this.defaultMaxTokens = config.defaultMaxTokens ?? 4096;

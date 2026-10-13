@@ -7,6 +7,7 @@ import type {
   ProviderProfile,
   ProviderProfileInput,
 } from "../shared/contracts";
+import { normalizeProviderModels } from "../shared/provider-models";
 import { DesktopStore } from "./desktop-store";
 import { ProviderSecretStore } from "./provider-secret-store";
 
@@ -44,7 +45,7 @@ export class ProviderService {
     const settings = this.store.getSettings();
     settings.providers = settings.providers.map((profile) => {
       const status = this.secrets.status(profile.id);
-      const env = environmentKey(profile.kind);
+      const env = profile.baseUrl ? undefined : environmentKey(profile.kind);
       return {
         ...profile,
         hasApiKey: status.hasApiKey || Boolean(env),
@@ -52,6 +53,9 @@ export class ProviderService {
           status.apiKeyHint ?? (env ? "Environment variable" : undefined),
       };
     });
+    settings.providers.sort(
+      (a, b) => Number(b.isDefault) - Number(a.isDefault),
+    );
     return settings;
   }
 
@@ -64,11 +68,19 @@ export class ProviderService {
   ): Promise<AppSettings> {
     const name = input.name.trim();
     const model = input.model.trim();
+    const models = normalizeProviderModels(input.models);
+    if (
+      input.models !== undefined &&
+      (!models.length || models.length !== input.models.length)
+    )
+      throw new Error("Models require a unique non-empty value");
+    if (models.length && !models.some((entry) => entry.value === model))
+      throw new Error("Default model must be one of the configured models");
     if (!name || !model)
       throw new Error("Provider name and model are required");
-    if (input.kind === "openai-compatible") {
-      if (!input.baseUrl?.trim())
-        throw new Error("An OpenAI-compatible provider requires a base URL");
+    if (input.kind === "openai-compatible" && !input.baseUrl?.trim())
+      throw new Error("An OpenAI-compatible provider requires a base URL");
+    if (input.baseUrl?.trim()) {
       const url = new URL(input.baseUrl);
       if (!["http:", "https:"].includes(url.protocol))
         throw new Error("Provider base URL must use HTTP or HTTPS");
@@ -95,6 +107,7 @@ export class ProviderService {
       kind: input.kind,
       model,
       baseUrl: input.baseUrl?.trim() || undefined,
+      ...(models.length ? { models } : {}),
       hasApiKey: secretStatus.hasApiKey,
       apiKeyHint: secretStatus.apiKeyHint,
       isDefault:
@@ -102,21 +115,16 @@ export class ProviderService {
         existing?.isDefault ??
         settings.providers.length === 0,
     };
-    const providers = settings.providers.filter(
-      (provider) => provider.id !== id,
+    const providers = settings.providers.map((provider) =>
+      provider.id === id ? profile : provider,
     );
-    providers.push(profile);
+    if (!existing) providers.push(profile);
     const selectedDefault = profile.isDefault
       ? id
       : (providers.find((provider) => provider.isDefault)?.id ?? id);
     for (const provider of providers)
       provider.isDefault = provider.id === selectedDefault;
     await this.store.updateSettings({ providers });
-    for (const thread of this.store.listThreads()) {
-      if (thread.providerProfileId === id && thread.model !== profile.model) {
-        await this.store.updateThread(thread.id, { model: profile.model });
-      }
-    }
     return this.settingsForRenderer();
   }
 
@@ -159,12 +167,17 @@ export class ProviderService {
     return profile;
   }
 
-  createModel(profileId?: string): {
+  createModel(
+    profileId?: string,
+    modelValue?: string,
+  ): {
     profile: ProviderProfile;
     model: LLMProvider;
   } {
     const profile = this.resolveProfile(profileId);
-    const apiKey = this.secrets.get(profile.id) ?? environmentKey(profile.kind);
+    const apiKey =
+      this.secrets.get(profile.id) ??
+      (profile.baseUrl ? undefined : environmentKey(profile.kind));
     if (!apiKey)
       throw new Error(
         `Add an API key for “${profile.name}” before starting a task`,
@@ -174,8 +187,9 @@ export class ProviderService {
         profile,
         model: new AnthropicProvider({
           apiKey,
-          model: profile.model,
+          model: modelValue || profile.model,
           defaultMaxTokens: 16_384,
+          baseURL: profile.baseUrl,
         }),
       };
     }
@@ -183,7 +197,7 @@ export class ProviderService {
       profile,
       model: new OpenAIProvider({
         apiKey,
-        model: profile.model,
+        model: modelValue || profile.model,
         baseURL:
           profile.kind === "openai-compatible" ? profile.baseUrl : undefined,
       }),

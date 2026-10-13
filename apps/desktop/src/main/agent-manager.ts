@@ -22,6 +22,8 @@ import { TracePlugin } from "@walle-agent/trace";
 import type {
   AgentEventEnvelope,
   AppSettings,
+  FollowUpMode,
+  PendingMessage,
   AssistantTimelineItem,
   ContextWindowSnapshot,
   EvolutionProposalSummary,
@@ -217,6 +219,7 @@ function splitCommandLine(command: string): string[] {
 }
 
 export class AgentManager {
+  private shuttingDown = false;
   private readonly handles = new Map<string, AgentHandle>();
   private readonly reservedThreads = new Set<string>();
   private readonly setupBarriers = new Map<string, Promise<void>>();
@@ -263,12 +266,147 @@ export class AgentManager {
     );
   }
 
+  async submitMessage(
+    threadId: string,
+    prompt: string,
+    attachments: Attachment[] = [],
+    displayPrompt = prompt,
+    displayParts?: UserMessagePart[],
+    mode: FollowUpMode = "queue",
+  ): Promise<{ runId: string; queued?: boolean; steered?: boolean }> {
+    if (!prompt.trim()) throw new Error("Prompt is required");
+    await this.setupBarriers.get(threadId);
+    const active = this.handles.get(threadId)?.active;
+    if (!active)
+      return this.startRun(
+        threadId,
+        prompt,
+        attachments,
+        displayPrompt,
+        displayParts,
+      );
+    const message: PendingMessage = {
+      id: randomUUID(),
+      prompt,
+      displayPrompt,
+      displayParts,
+      mode,
+      attachments: attachments.map((attachment) => ({
+        ...attachment,
+        data: Buffer.isBuffer(attachment.data)
+          ? attachment.data.toString("base64")
+          : attachment.data,
+      })),
+      createdAt: new Date().toISOString(),
+    };
+    (active.timeline.pendingMessages ??= []).push(message);
+    await this.store.saveTimeline(active.timeline);
+    this.emit(
+      active.normalizer.envelope(
+        "messages.pending",
+        active.timeline.pendingMessages,
+      ),
+    );
+    const handle = this.handles.get(threadId);
+    if (
+      mode === "steer" &&
+      handle?.active === active &&
+      handle.agent.steer({
+        content: prompt,
+        attachments: message.attachments,
+        metadata: { pendingMessageId: message.id },
+      })
+    )
+      return { runId: active.runId, steered: true };
+    message.mode = "queue";
+    // Completion may race persistence of the follow-up.
+    if (!this.reservedThreads.has(threadId)) void this.drainPending(threadId);
+    return { runId: active.runId, queued: true };
+  }
+
+  async updatePendingMessage(
+    threadId: string,
+    messageId: string,
+    action: "remove" | "steer" | "send",
+  ): Promise<void> {
+    const handle = this.handles.get(threadId);
+    const timeline =
+      handle?.active?.timeline ?? this.store.getTimeline(threadId);
+    const message = timeline.pendingMessages?.find(
+      (item) => item.id === messageId,
+    );
+    if (!message) return;
+    if (message.mode === "steer" && handle?.active)
+      throw new Error("Guidance has already been submitted");
+    if (action === "remove") {
+      timeline.pendingMessages = timeline.pendingMessages?.filter(
+        (item) => item.id !== messageId,
+      );
+    } else if (action === "steer" && handle?.active) {
+      if (
+        !handle.agent.steer({
+          content: message.prompt,
+          attachments: message.attachments,
+          metadata: { pendingMessageId: message.id },
+        })
+      )
+        throw new Error(
+          "The run has finished. Send this message as the next turn.",
+        );
+      message.mode = "steer";
+    } else if (!this.reservedThreads.has(threadId)) {
+      await this.startRun(
+        threadId,
+        message.prompt,
+        message.attachments,
+        message.displayPrompt,
+        message.displayParts,
+        message.id,
+      );
+      return;
+    }
+    await this.store.saveTimeline(timeline);
+    if (handle?.active)
+      this.emit(
+        handle.active.normalizer.envelope(
+          "messages.pending",
+          timeline.pendingMessages ?? [],
+        ),
+      );
+    else if (handle?.lastNormalizer)
+      this.emit(
+        handle.lastNormalizer.envelope(
+          "messages.pending",
+          timeline.pendingMessages ?? [],
+        ),
+      );
+  }
+
+  private async drainPending(threadId: string): Promise<void> {
+    if (this.shuttingDown || this.reservedThreads.has(threadId)) return;
+    const message = this.store.getTimeline(threadId).pendingMessages?.[0];
+    if (!message) return;
+    try {
+      await this.startRun(
+        threadId,
+        message.prompt,
+        message.attachments,
+        message.displayPrompt,
+        message.displayParts,
+        message.id,
+      );
+    } catch (error) {
+      console.error("Could not start queued message:", error);
+    }
+  }
+
   async startRun(
     threadId: string,
     prompt: string,
     attachments: Attachment[] = [],
     displayPrompt = prompt,
     displayParts?: UserMessagePart[],
+    pendingMessageId?: string,
   ): Promise<{ runId: string }> {
     const content = prompt.trim();
     if (!content) throw new Error("Prompt is required");
@@ -299,13 +437,18 @@ export class AgentManager {
       const shouldGenerateTitle =
         thread.title === "New task" &&
         !timeline.items.some((item) => item.type === "user");
-      timeline.items.push({
+      const user = {
         id: randomUUID(),
-        type: "user",
+        type: "user" as const,
         content: visibleContent,
         ...(displayParts?.length ? { parts: displayParts } : {}),
         createdAt: now,
-      });
+      };
+      timeline.items.push(user);
+      if (pendingMessageId)
+        timeline.pendingMessages = timeline.pendingMessages?.filter(
+          (item) => item.id !== pendingMessageId,
+        );
       const assistant: AssistantTimelineItem = {
         id: randomUUID(),
         type: "assistant",
@@ -338,6 +481,10 @@ export class AgentManager {
       await this.store.updateThread(threadId, patch);
       handle.active = active;
       handle.lastNormalizer = normalizer;
+      this.emit(normalizer.envelope("message.sent", user));
+      this.emit(
+        normalizer.envelope("messages.pending", timeline.pendingMessages ?? []),
+      );
       this.emit(normalizer.started(visibleContent));
 
       active.done = this.executeRun(
@@ -626,6 +773,7 @@ export class AgentManager {
   }
 
   async dispose(): Promise<void> {
+    this.shuttingDown = true;
     const titleDisposal = this.titles.dispose();
     this.broker.cancelAll();
     for (const controller of this.setupControllers.values()) {
@@ -665,6 +813,41 @@ export class AgentManager {
         { stream: true, sessionId: thread.sessionId },
       );
       for await (const coreEvent of stream) {
+        if (coreEvent.type === "input_steered") {
+          const id = coreEvent.input.metadata?.pendingMessageId;
+          const message = active.timeline.pendingMessages?.find(
+            (item) => item.id === id,
+          );
+          if (message) {
+            const user = {
+              id: message.id,
+              type: "user" as const,
+              content: message.displayPrompt,
+              parts: message.displayParts,
+              createdAt: new Date().toISOString(),
+            };
+            const assistantIndex = active.timeline.items.findIndex(
+              (item) =>
+                item.type === "assistant" && item.runId === active.runId,
+            );
+            active.timeline.items.splice(
+              assistantIndex < 0
+                ? active.timeline.items.length
+                : assistantIndex,
+              0,
+              user,
+            );
+            active.timeline.pendingMessages =
+              active.timeline.pendingMessages?.filter((item) => item.id !== id);
+            this.emit(active.normalizer.envelope("message.sent", user));
+            this.emit(
+              active.normalizer.envelope(
+                "messages.pending",
+                active.timeline.pendingMessages ?? [],
+              ),
+            );
+          }
+        }
         for (const event of active.normalizer.consume(coreEvent)) {
           if (event.type === "context.updated") {
             active.timeline.contextWindow = structuredClone(
@@ -731,6 +914,8 @@ export class AgentManager {
         }
       }
       if (finalizationError) throw finalizationError;
+      if (active.normalizer.assistant.status === "completed")
+        void this.drainPending(thread.id);
     }
   }
 
@@ -766,6 +951,7 @@ export class AgentManager {
 
     const { model, profile } = this.providers.createModel(
       thread.providerProfileId,
+      thread.model,
     );
     const root = join(this.runtimeRoot, thread.id);
     const memory = new MemoryPlugin({
@@ -943,7 +1129,9 @@ export class AgentManager {
       );
     }
 
-    const interactiveApprovals = settings.permissions.mode !== "auto";
+    const fullAccess = settings.permissions.mode === "full-access";
+    const interactiveApprovals =
+      !fullAccess && settings.permissions.mode !== "auto";
     const approvalToolNames = interactiveApprovals
       ? [
           "forget",
@@ -972,9 +1160,11 @@ export class AgentManager {
       policyExemptions.push("shell");
     }
     const permissionPolicy: PermissionPolicy = {
-      mode: settings.permissions.mode,
+      mode: fullAccess
+        ? "auto"
+        : (settings.permissions.mode as PermissionPolicy["mode"]),
       allowTools: [...new Set([...persistedAllowTools, ...policyExemptions])],
-      denyTools: [...settings.permissions.denyTools],
+      denyTools: fullAccess ? [] : [...settings.permissions.denyTools],
       ...(hasApprovalRules
         ? {
             requireApprovalFor: {
@@ -1014,7 +1204,7 @@ export class AgentManager {
       sessionId: thread.sessionId,
       workspaceRoot: thread.workspaceRoot,
       model,
-      systemPrompt: `${settings.defaultSystemPrompt}\n\nWorkspace root: ${thread.workspaceRoot}\nProvider: ${profile.name} (${profile.model})`,
+      systemPrompt: `${settings.defaultSystemPrompt}\n\nWorkspace root: ${thread.workspaceRoot}\nProvider: ${profile.name} (${thread.model || profile.model})`,
       plugins,
       permissions: permissionPolicy,
       useBuiltinTools,

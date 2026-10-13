@@ -105,7 +105,7 @@ describe("Sidebar", () => {
     expect(handlers.onOpenSettings).toHaveBeenCalledOnce();
   });
 
-  it("overlays search below the header without shifting content and closes with Escape", () => {
+  it("replaces the brand with inline search without shifting content and closes with Escape", () => {
     render(renderSidebar(true, { threads: [thread] }));
 
     const navigation = screen.getByRole("navigation", {
@@ -120,8 +120,10 @@ describe("Sidebar", () => {
 
     const search = screen.getByRole("search");
     const input = screen.getByPlaceholderText("Search conversations");
-    expect(search).toHaveAttribute("data-slot", "sidebar-search-popover");
-    expect(search).toHaveClass("absolute", "top-11", "z-20");
+    expect(search).toHaveAttribute("data-slot", "sidebar-search");
+    expect(search).not.toHaveClass("absolute");
+    expect(search.parentElement).toBe(searchToggle.parentElement);
+    expect(screen.queryByText("Walle")).not.toBeInTheDocument();
     expect(navigation).toBeVisible();
     expect(input).toHaveFocus();
     expect(searchToggle).toHaveAttribute("aria-expanded", "true");
@@ -135,6 +137,7 @@ describe("Sidebar", () => {
 
     expect(screen.queryByRole("search")).not.toBeInTheDocument();
     expect(searchToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Walle")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Improve sidebar" }),
     ).toBeInTheDocument();
@@ -272,4 +275,120 @@ describe("Sidebar", () => {
       screen.queryByText("1 unread", { selector: ".sr-only" }),
     ).not.toBeInTheDocument();
   });
+});
+
+it("keeps folders fixed and threads in descending creation order despite activity", () => {
+  const old = {
+    ...thread,
+    id: "old",
+    title: "Older task",
+    createdAt: "2026-08-01T00:00:00.000Z",
+    updatedAt: "2026-08-15T00:00:00.000Z",
+  };
+  const recent = {
+    ...thread,
+    id: "recent",
+    title: "Newer task",
+    createdAt: "2026-08-02T00:00:00.000Z",
+    updatedAt: "2026-08-02T00:00:00.000Z",
+  };
+  const other = {
+    ...thread,
+    id: "other",
+    title: "Other task",
+    workspaceRoot: "/workspace/other",
+    workspaceName: "other",
+    createdAt: "2026-08-03T00:00:00.000Z",
+  };
+  const view = render(renderSidebar(true, { threads: [other, old, recent] }));
+  const folders = () =>
+    screen
+      .getAllByRole("button", { name: /^Collapse .* workspace/ })
+      .map((button) => button.getAttribute("aria-label"));
+  const tasks = () =>
+    screen
+      .getAllByRole("button")
+      .map((button) => button.textContent)
+      .filter((text) => text?.includes("task") && !text.includes("New task"));
+  expect(folders()).toEqual([
+    "Collapse walle-agent workspace",
+    "Collapse other workspace",
+  ]);
+  expect(
+    tasks().findIndex((text) => text?.includes("Newer task")),
+  ).toBeLessThan(tasks().findIndex((text) => text?.includes("Older task")));
+  view.rerender(
+    renderSidebar(true, {
+      threads: [
+        { ...other, updatedAt: "2026-09-01T00:00:00.000Z" },
+        recent,
+        { ...old, updatedAt: "2026-10-01T00:00:00.000Z" },
+      ],
+    }),
+  );
+  expect(folders()).toEqual([
+    "Collapse walle-agent workspace",
+    "Collapse other workspace",
+  ]);
+  expect(
+    tasks().findIndex((text) => text?.includes("Newer task")),
+  ).toBeLessThan(tasks().findIndex((text) => text?.includes("Older task")));
+  const newest = {
+    ...other,
+    id: "newest",
+    title: "Newest task",
+    createdAt: "2026-10-01T00:00:00.000Z",
+  };
+  view.rerender(renderSidebar(true, { threads: [newest, recent, old, other] }));
+  expect(folders()).toEqual([
+    "Collapse walle-agent workspace",
+    "Collapse other workspace",
+  ]);
+});
+
+it("restores folder order after remount even when the oldest conversation is gone", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+  const storage = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+    },
+  });
+  try {
+    const other = {
+      ...thread,
+      id: "other",
+      workspaceRoot: "/other",
+      workspaceName: "other",
+      createdAt: "2026-08-11T00:00:00.000Z",
+    };
+    const view = render(renderSidebar(true, { threads: [other, thread] }));
+    expect(JSON.parse(storage.get("walle.sidebar-workspace-order")!)).toEqual([
+      thread.workspaceRoot,
+      "/other",
+    ]);
+    view.unmount();
+    render(
+      renderSidebar(true, {
+        threads: [
+          other,
+          {
+            ...thread,
+            id: "replacement",
+            createdAt: "2026-10-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    expect(
+      screen
+        .getAllByRole("button", { name: /^Collapse .* workspace/ })
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Collapse walle-agent workspace", "Collapse other workspace"]);
+  } finally {
+    if (descriptor) Object.defineProperty(window, "localStorage", descriptor);
+    else Reflect.deleteProperty(window, "localStorage");
+  }
 });

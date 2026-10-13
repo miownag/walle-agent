@@ -12,6 +12,7 @@ import {
   IconArrowsMinimize,
   IconAt,
   IconChevronDown,
+  IconCheck,
   IconFile,
   IconFolder,
   IconLoader2,
@@ -30,10 +31,8 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -44,6 +43,8 @@ import {
 import { cn } from "@/lib/utils";
 import {
   type ContextCommand,
+  type FollowUpMode,
+  type PendingMessage,
   type ContextWindowSnapshot,
   MAX_IMAGE_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENTS,
@@ -58,6 +59,7 @@ import {
   type UserMessagePart,
   type WorkspaceFileMatch,
 } from "@shared/contracts";
+import { providerModels } from "@shared/provider-models";
 import { ContextWindowMeter } from "./context-window-meter";
 import {
   extractEditorMessageParts,
@@ -88,16 +90,24 @@ export interface ComposerProps {
   contextWindow?: ContextWindowSnapshot;
   maxContextTokens: number;
   running: boolean;
+  followUpMode?: FollowUpMode;
+  onFollowUpModeChange?: (mode: FollowUpMode) => Promise<void>;
+  pendingMessages?: PendingMessage[];
+  onPendingMessageAction?: (
+    id: string,
+    action: "remove" | "steer" | "send",
+  ) => Promise<void>;
   focused: boolean;
   onSend: (
     prompt: string,
     displayPrompt?: string,
     imageAttachments?: SavedImageAttachment[],
     displayParts?: UserMessagePart[],
+    mode?: FollowUpMode,
   ) => Promise<void>;
   onStop: () => Promise<void>;
   onSlashCommand: (command: ContextCommand) => Promise<void>;
-  onProviderChange: (providerId: string) => Promise<void>;
+  onProviderChange: (providerId: string, model?: string) => Promise<void>;
   onPermissionModeChange: (mode: PermissionMode) => Promise<void>;
   onSearchWorkspaceFiles?: (
     threadId: string,
@@ -114,6 +124,7 @@ const permissionLabels: Record<PermissionMode, string> = {
   auto: "Approve automatically",
   ask: "Ask before actions",
   "deny-high-risk": "Deny high-risk",
+  "full-access": "Full Access",
 };
 
 const slashCommands: Array<{
@@ -249,6 +260,10 @@ export function Composer({
   contextWindow,
   maxContextTokens,
   running,
+  followUpMode = "queue",
+  onFollowUpModeChange,
+  pendingMessages = [],
+  onPendingMessageAction,
   focused,
   onSend,
   onStop,
@@ -289,6 +304,12 @@ export function Composer({
   const provider =
     providers.find((item) => item.id === thread.providerProfileId) ??
     providers[0];
+  const currentModel = thread.model || provider?.model || "";
+  const currentModelLabel =
+    (provider &&
+      providerModels(provider).find((entry) => entry.value === currentModel)
+        ?.label) ||
+    currentModel;
   const mentionOpen = Boolean(mentionQuery);
   const matchingSlashCommands =
     slashQuery === null
@@ -379,7 +400,7 @@ export function Composer({
   };
 
   const addImageFiles = (files: File[]) => {
-    if (!files.length || running || sending) return;
+    if (!files.length || sending) return;
     const next = [...attachmentsRef.current];
     let error = "";
     for (const file of files) {
@@ -439,7 +460,7 @@ export function Composer({
       Placeholder.configure({ placeholder: () => placeholderRef.current }),
     ],
     content: { type: "doc", content: [{ type: "paragraph" }] },
-    editable: !running && !sending,
+    editable: !sending,
     editorProps: {
       attributes: {
         class:
@@ -461,14 +482,11 @@ export function Composer({
 
   useEffect(() => {
     if (!editor) return;
-    editor.setEditable(!running && !sending);
+    editor.setEditable(!sending);
     placeholderRef.current = running
-      ? "Walle is working…"
+      ? "Add a follow-up…"
       : "Ask Walle… Use @ to reference a workspace file";
-    editor.view.dom.setAttribute(
-      "aria-disabled",
-      running || sending ? "true" : "false",
-    );
+    editor.view.dom.setAttribute("aria-disabled", sending ? "true" : "false");
     editor.view.dispatch(editor.state.tr);
   }, [editor, running, sending]);
 
@@ -524,7 +542,7 @@ export function Composer({
   }, [editor, thread.id]);
 
   useEffect(() => {
-    if (focused && !running && !sending) editor?.commands.focus("end");
+    if (focused && !sending) editor?.commands.focus("end");
   }, [editor, focused, running, sending, thread.id]);
 
   const onFilesSelected = (event: ChangeEvent<HTMLInputElement>) => {
@@ -689,7 +707,7 @@ export function Composer({
     );
     const draft = serializeEditorMessageParts(editorParts, "display");
     const currentAttachments = attachmentsRef.current;
-    if ((!draft && !currentAttachments.length) || running || sending) return;
+    if ((!draft && !currentAttachments.length) || sending) return;
     const slashCommand = slashCommands.find(
       (candidate) => candidate.label === draft,
     );
@@ -756,7 +774,21 @@ export function Composer({
       }
       const displayPrompt = serializeUserMessageParts(displayParts);
 
-      await onSend(modelPrompt, displayPrompt, savedAttachments, displayParts);
+      if (running)
+        await onSend(
+          modelPrompt,
+          displayPrompt,
+          savedAttachments,
+          displayParts,
+          followUpMode,
+        );
+      else
+        await onSend(
+          modelPrompt,
+          displayPrompt,
+          savedAttachments,
+          displayParts,
+        );
       if (activeThreadId.current !== submissionThreadId) return;
       editor.commands.clearContent(true);
       setDraftText("");
@@ -783,6 +815,57 @@ export function Composer({
 
   return (
     <div className="mx-auto w-full max-w-[820px] px-5 pb-4 max-[720px]:px-3">
+      {pendingMessages.length > 0 && (
+        <div className="mb-2 space-y-1" aria-label="Pending messages">
+          {pendingMessages.map((message) => (
+            <div
+              key={message.id}
+              className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs"
+            >
+              <span className="shrink-0 text-[10px] text-muted-foreground">
+                {message.mode === "steer" && running ? "Steering…" : "Queued"}
+              </span>
+              <span
+                className="min-w-0 flex-1 truncate"
+                title={message.displayPrompt}
+              >
+                {message.displayPrompt}
+              </span>
+              {onPendingMessageAction &&
+                !(message.mode === "steer" && running) && (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-[10px]"
+                      onClick={() =>
+                        void onPendingMessageAction(
+                          message.id,
+                          running ? "steer" : "send",
+                        ).catch((error) => setComposerError(errorText(error)))
+                      }
+                    >
+                      {running ? "Steer" : "Send now"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-6"
+                      aria-label="Remove queued message"
+                      onClick={() =>
+                        void onPendingMessageAction(message.id, "remove").catch(
+                          (error) => setComposerError(errorText(error)),
+                        )
+                      }
+                    >
+                      <IconX className="size-3" />
+                    </Button>
+                  </>
+                )}
+            </div>
+          ))}
+        </div>
+      )}
       <div
         className={cn(
           "relative overflow-visible rounded-[15px] border border-border/90 bg-[var(--composer)] shadow-[0_8px_30px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] transition-shadow",
@@ -859,7 +942,7 @@ export function Composer({
                   size="icon-xs"
                   className="absolute right-1 top-1 size-5 rounded-full bg-background/90 opacity-90 shadow-sm group-hover:opacity-100"
                   aria-label={`Remove ${safeDisplayName(attachment.file.name)}`}
-                  disabled={sending || running}
+                  disabled={sending}
                   onClick={() => removeAttachment(attachment.id)}
                 >
                   <IconX className="size-3" />
@@ -1006,7 +1089,7 @@ export function Composer({
                   variant="ghost"
                   size="icon-sm"
                   aria-label="Attach images"
-                  disabled={running || sending}
+                  disabled={sending}
                   onClick={() => fileInputRef.current?.click()}
                 />
               }
@@ -1031,8 +1114,8 @@ export function Composer({
                   variant="ghost"
                   size="sm"
                   aria-label={
-                    provider?.model || thread.model
-                      ? `Select provider and model, current ${provider?.model ?? thread.model}`
+                    currentModel
+                      ? `Select provider and model, current ${currentModelLabel}`
                       : "Select provider and model"
                   }
                   className="max-w-[240px] gap-1 px-1.5 font-normal text-muted-foreground"
@@ -1040,44 +1123,66 @@ export function Composer({
                 />
               }
             >
-              <span className="truncate">
-                {provider?.model ?? thread.model}
-              </span>
+              <span className="truncate">{currentModelLabel}</span>
               <IconChevronDown className="size-3" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-64">
               <DropdownMenuGroup>
-                <DropdownMenuLabel>Provider & model</DropdownMenuLabel>
-                {providers.map((profile) => (
-                  <DropdownMenuItem
-                    key={profile.id}
-                    onClick={() => void onProviderChange(profile.id)}
-                  >
-                    <span className="size-1.5 rounded-full bg-[var(--brand)]" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs">
-                        {profile.model}
-                      </span>
-                      <span className="block truncate text-[10px] text-muted-foreground">
-                        {profile.name}
-                      </span>
-                    </span>
-                    {profile.id === thread.providerProfileId && (
-                      <span className="text-[10px]">Current</span>
-                    )}
-                  </DropdownMenuItem>
-                ))}
+                {providers.flatMap((profile) =>
+                  providerModels(profile).map((entry) => (
+                    <Tooltip key={`${profile.id}:${entry.value}`}>
+                      <TooltipTrigger
+                        render={
+                          <DropdownMenuItem
+                            onClick={() =>
+                              void onProviderChange(profile.id, entry.value)
+                            }
+                          />
+                        }
+                      >
+                        <span className="size-1.5 shrink-0 rounded-full bg-[var(--brand)]" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-xs">
+                            {entry.label || entry.value}
+                          </span>
+                          {entry.description && (
+                            <span className="block whitespace-normal text-[10px] text-muted-foreground">
+                              {entry.description}
+                            </span>
+                          )}
+                        </span>
+                        {profile.id === thread.providerProfileId &&
+                          entry.value === currentModel && (
+                            <IconCheck
+                              className="size-3.5 shrink-0"
+                              aria-label="Selected model"
+                            />
+                          )}
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="right"
+                        align="start"
+                        className="max-w-80 flex-col items-start gap-1"
+                      >
+                        <span className="font-medium">
+                          {entry.label || entry.value}
+                        </span>
+                        <span>
+                          Provider: {profile.name} · {profile.kind}
+                        </span>
+                        <span className="break-all font-mono text-[10px]">
+                          Model ID: {entry.value}
+                        </span>
+                        {entry.description && <span>{entry.description}</span>}
+                      </TooltipContent>
+                    </Tooltip>
+                  )),
+                )}
                 {providers.length === 0 && (
                   <DropdownMenuItem disabled>
                     No provider configured
                   </DropdownMenuItem>
                 )}
-              </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuLabel className="font-normal">
-                  Manage providers in Settings
-                </DropdownMenuLabel>
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1092,7 +1197,11 @@ export function Composer({
                   variant="ghost"
                   size="sm"
                   aria-label={`Select approval policy, current ${permissionLabels[permissionMode]}`}
-                  className="max-w-[190px] gap-1 px-1.5 font-normal text-muted-foreground"
+                  className={cn(
+                    "max-w-[190px] gap-1 px-1.5 font-normal text-muted-foreground",
+                    permissionMode === "full-access" &&
+                      "bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-500 dark:bg-red-950/30 dark:text-red-300",
+                  )}
                   disabled={running || sending}
                 />
               }
@@ -1105,7 +1214,6 @@ export function Composer({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-52">
               <DropdownMenuGroup>
-                <DropdownMenuLabel>Approval policy</DropdownMenuLabel>
                 <DropdownMenuRadioGroup
                   value={permissionMode}
                   onValueChange={(mode) => {
@@ -1122,6 +1230,12 @@ export function Composer({
                   <DropdownMenuRadioItem value="deny-high-risk">
                     Deny high-risk
                   </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem
+                    value="full-access"
+                    className="text-red-400 data-highlighted:bg-red-50 data-highlighted:text-red-500 dark:text-red-300 dark:data-highlighted:bg-red-950/30"
+                  >
+                    Full Access
+                  </DropdownMenuRadioItem>
                 </DropdownMenuRadioGroup>
               </DropdownMenuGroup>
             </DropdownMenuContent>
@@ -1137,38 +1251,80 @@ export function Composer({
               maxTokens={contextWindow?.maxTokens ?? maxContextTokens}
               source={contextWindow?.source}
             />
-            {running ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      size="icon"
-                      variant="default"
-                      className="size-7 rounded-full"
-                      onClick={() => void onStop()}
-                      aria-label="Stop run"
-                    />
-                  }
+
+            {running && (
+              <>
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+                        aria-label="Follow-up behavior"
+                      />
+                    }
+                  >
+                    {followUpMode === "queue" ? "Queue" : "Steer"}
+                    <IconChevronDown className="size-3" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-64">
+                    <DropdownMenuRadioGroup
+                      value={followUpMode}
+                      onValueChange={(value) => {
+                        const mode = value as FollowUpMode;
+                        void onFollowUpModeChange?.(mode);
+                      }}
+                    >
+                      <DropdownMenuRadioItem value="queue">
+                        <span>
+                          Queue
+                          <span className="block text-[10px] text-muted-foreground">
+                            Send after the current response finishes
+                          </span>
+                        </span>
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="steer">
+                        <span>
+                          Steer
+                          <span className="block text-[10px] text-muted-foreground">
+                            Guide the task in progress
+                          </span>
+                        </span>
+                      </DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-7 rounded-full"
+                  onClick={() => void onStop()}
+                  aria-label="Stop run"
                 >
                   <IconPlayerStopFilled className="size-3" />
-                </TooltipTrigger>
-                <TooltipContent>Stop run</TooltipContent>
-              </Tooltip>
-            ) : (
-              <Button
-                size="icon"
-                className="size-7 rounded-full"
-                disabled={!canSubmit || sending}
-                onClick={() => void submit()}
-                aria-label="Send message"
-              >
-                {sending ? (
-                  <IconLoader2 className="size-4 animate-spin" />
-                ) : (
-                  <IconArrowUp className="size-4" />
-                )}
-              </Button>
+                </Button>
+              </>
             )}
+            <Button
+              size="icon"
+              className="size-7 rounded-full"
+              disabled={!canSubmit || sending}
+              onClick={() => void submit()}
+              aria-label={
+                running
+                  ? followUpMode === "queue"
+                    ? "Queue message"
+                    : "Steer run"
+                  : "Send message"
+              }
+            >
+              {sending ? (
+                <IconLoader2 className="size-4 animate-spin" />
+              ) : (
+                <IconArrowUp className="size-4" />
+              )}
+            </Button>
           </div>
         </div>
       </div>

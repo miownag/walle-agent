@@ -1,16 +1,25 @@
+import type { Attachment } from "@walle-agent/core";
+
 export type ThemeMode = "system" | "light" | "dark";
 export type Density = "comfortable" | "compact";
 export type ProviderKind = "openai" | "openai-compatible" | "anthropic";
 export type SandboxKind = "local" | "docker";
-export type PermissionMode = "auto" | "ask" | "deny-high-risk";
+export type PermissionMode = "auto" | "ask" | "deny-high-risk" | "full-access";
 export type ThreadStatus = "idle" | "running" | "approval" | "error";
 export type RunStatus = "running" | "completed" | "cancelled" | "error";
+
+export interface ProviderModel {
+  label?: string;
+  value: string;
+  description?: string;
+}
 
 export interface ProviderProfile {
   id: string;
   name: string;
   kind: ProviderKind;
   model: string;
+  models?: ProviderModel[];
   baseUrl?: string;
   hasApiKey: boolean;
   apiKeyHint?: string;
@@ -22,6 +31,7 @@ export interface ProviderProfileInput {
   name: string;
   kind: ProviderKind;
   model: string;
+  models?: ProviderModel[];
   baseUrl?: string;
   apiKey?: string;
   isDefault?: boolean;
@@ -86,6 +96,7 @@ export interface McpServerSettings {
 export interface AppSettings {
   version: 1;
   appearance: AppearanceSettings;
+  followUpMode?: FollowUpMode;
   sandbox: SandboxSettings;
   permissions: PermissionSettings;
   capabilities: CapabilitySettings;
@@ -226,11 +237,24 @@ export interface ContextWindowSnapshot {
   updatedAt: string;
 }
 
+export type FollowUpMode = "queue" | "steer";
+
+export interface PendingMessage {
+  id: string;
+  prompt: string;
+  displayPrompt: string;
+  displayParts?: UserMessagePart[];
+  attachments: Attachment[];
+  mode: FollowUpMode;
+  createdAt: string;
+}
+
 export interface ThreadTimeline {
   version: 1;
   threadId: string;
   items: TimelineItem[];
   contextWindow?: ContextWindowSnapshot;
+  pendingMessages?: PendingMessage[];
 }
 
 export interface ApprovalRequestDto {
@@ -247,6 +271,8 @@ export interface ApprovalRequestDto {
 }
 
 export type AgentEventType =
+  | "messages.pending"
+  | "message.sent"
   | "run.started"
   | "model.started"
   | "reasoning.delta"
@@ -431,12 +457,14 @@ export interface BootstrapPayload {
 }
 
 export interface CreateThreadInput {
+  model?: string;
   workspaceRoot?: string;
   providerProfileId?: string;
   title?: string;
 }
 
 export interface UpdateThreadInput {
+  model?: string;
   title?: string;
   pinned?: boolean;
   archived?: boolean;
@@ -476,7 +504,13 @@ export interface DesktopApi {
     imageAttachments?: SavedImageAttachment[],
     displayPrompt?: string,
     displayParts?: UserMessagePart[],
-  ): Promise<{ runId: string }>;
+    mode?: FollowUpMode,
+  ): Promise<{ runId: string; queued?: boolean; steered?: boolean }>;
+  updatePendingMessage(
+    threadId: string,
+    messageId: string,
+    action: "remove" | "steer" | "send",
+  ): Promise<void>;
   cancelRun(threadId: string): Promise<void>;
   clearContext(threadId: string): Promise<ContextResetResult>;
   compactContext(threadId: string): Promise<ContextCompactionResult>;
@@ -561,6 +595,7 @@ export const IPC = {
   threadDisclosure: "thread:disclosure",
   runStart: "run:start",
   runCancel: "run:cancel",
+  pendingUpdate: "run:pending-update",
   contextClear: "context:clear",
   contextCompact: "context:compact",
   approvalResolve: "approval:resolve",

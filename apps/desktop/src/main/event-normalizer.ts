@@ -481,7 +481,7 @@ export class AgentEventNormalizer {
     this.assistant.usage = current;
   }
 
-  private envelope<T>(
+  envelope<T>(
     type: AgentEventEnvelope<T>["type"],
     payload: T,
     turn?: number,

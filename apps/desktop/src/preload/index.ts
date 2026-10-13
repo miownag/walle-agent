@@ -31,7 +31,14 @@ const api: DesktopApi = {
   getTimeline: (threadId) => ipcRenderer.invoke(IPC.threadTimeline, threadId),
   setProcessDisclosure: (threadId, runId, disclosure) =>
     ipcRenderer.invoke(IPC.threadDisclosure, threadId, runId, disclosure),
-  startRun: (threadId, prompt, imageAttachments, displayPrompt, displayParts) =>
+  startRun: (
+    threadId,
+    prompt,
+    imageAttachments,
+    displayPrompt,
+    displayParts,
+    mode,
+  ) =>
     ipcRenderer.invoke(
       IPC.runStart,
       threadId,
@@ -39,7 +46,10 @@ const api: DesktopApi = {
       imageAttachments,
       displayPrompt,
       displayParts,
+      ...(mode === undefined ? [] : [mode]),
     ),
+  updatePendingMessage: (threadId, messageId, action) =>
+    ipcRenderer.invoke(IPC.pendingUpdate, threadId, messageId, action),
   cancelRun: (threadId) => ipcRenderer.invoke(IPC.runCancel, threadId),
   clearContext: (threadId) => ipcRenderer.invoke(IPC.contextClear, threadId),
   compactContext: (threadId) =>

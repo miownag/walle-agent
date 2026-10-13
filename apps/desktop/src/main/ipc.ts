@@ -318,7 +318,10 @@ export function registerIpcHandlers(deps: IpcDependencies): () => void {
     const patch = objectArg<UpdateThreadInput>(raw, "thread patch");
     const before = deps.store.getThread(id);
     const updated = await deps.store.updateThread(id, patch);
-    if (before?.providerProfileId !== updated.providerProfileId)
+    if (
+      before?.providerProfileId !== updated.providerProfileId ||
+      before?.model !== updated.model
+    )
       await deps.agents.invalidateThread(id);
     return updated;
   });
@@ -375,6 +378,7 @@ export function registerIpcHandlers(deps: IpcDependencies): () => void {
       rawAttachments?: unknown,
       displayPrompt?: unknown,
       rawDisplayParts?: unknown,
+      mode?: unknown,
     ) => {
       const id = stringArg(threadId, "thread id", 256);
       const thread = deps.store.getThread(id);
@@ -412,12 +416,27 @@ export function registerIpcHandlers(deps: IpcDependencies): () => void {
             .join("\n")}`;
         }
       }
-      return deps.agents.startRun(
+      if (mode !== undefined && mode !== "queue" && mode !== "steer")
+        throw new Error("Invalid follow-up mode");
+      return deps.agents.submitMessage(
         id,
         modelPrompt,
         attachments,
         visiblePrompt,
         displayParts,
+        mode,
+      );
+    },
+  );
+  handle(
+    IPC.pendingUpdate,
+    (threadId: unknown, messageId: unknown, action: unknown) => {
+      if (action !== "remove" && action !== "steer" && action !== "send")
+        throw new Error("Invalid pending message action");
+      return deps.agents.updatePendingMessage(
+        stringArg(threadId, "thread id", 256),
+        stringArg(messageId, "message id", 256),
+        action,
       );
     },
   );

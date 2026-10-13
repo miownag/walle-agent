@@ -3,7 +3,12 @@
  */
 
 import { existsSync } from "node:fs";
-import type { AgentConfig, AgentInput, AgentResult, RunOptions } from "./agent-config.js";
+import type {
+  AgentConfig,
+  AgentInput,
+  AgentResult,
+  RunOptions,
+} from "./agent-config.js";
 import { resolveConfig } from "./agent-config.js";
 import { AgentRuntime } from "./agent-runtime.js";
 import { AgentStream } from "./stream.js";
@@ -71,9 +76,9 @@ export class Agent {
       throw new Error("Agent.resume: sessionId must be a non-empty string");
     }
 
-    const memory = (config.plugins ?? []).find(
-      (p) => p.name === "memory",
-    ) as MemoryPluginLike | undefined;
+    const memory = (config.plugins ?? []).find((p) => p.name === "memory") as
+      | MemoryPluginLike
+      | undefined;
 
     if (!memory) {
       throw new Error(
@@ -117,12 +122,18 @@ export class Agent {
   /**
    * Streaming execution.
    */
-  run(input: string | AgentInput, options: { stream: true } & RunOptions): AgentStream;
+  run(
+    input: string | AgentInput,
+    options: { stream: true } & RunOptions,
+  ): AgentStream;
 
   /**
    * Unified entry point.
    */
-  run(input: string | AgentInput, options?: RunOptions): Promise<AgentResult> | AgentStream {
+  run(
+    input: string | AgentInput,
+    options?: RunOptions,
+  ): Promise<AgentResult> | AgentStream {
     if (options?.stream) {
       return this.runtime.stream(input, options);
     }
@@ -140,6 +151,13 @@ export class Agent {
    */
   interrupt(reason?: string): void {
     this.runtime.requestInterrupt(reason);
+  }
+
+  /** Add guidance to the active run at its next model/tool boundary. */
+  steer(input: string | AgentInput): boolean {
+    return this.runtime.steer(
+      typeof input === "string" ? { content: input } : input,
+    );
   }
 
   /** Whether a run is currently in flight. */

@@ -255,6 +255,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export interface AnthropicProviderConfig {
   apiKey?: string;
+  baseURL?: string;
   model: string;
   defaultMaxTokens?: number;
   thinking?: { enabled: boolean; budgetTokens?: number };
@@ -268,6 +269,7 @@ export class AnthropicProvider implements LLMProvider {
   constructor(config: AnthropicProviderConfig) {
     this.client = new Anthropic({
       apiKey: config.apiKey ?? process.env.ANTHROPIC_API_KEY,
+      baseURL: config.baseURL,
     });
     this.model = config.model;
   }
@@ -383,3 +385,5 @@ Provider 按天然顺序发射：先 `thinking_delta`，后 `text_delta`，最�
 ### 示例
 
 `examples/thinking.ts`：DeepSeek thinking mode 流式演示，分别打印「思考」与「回答」。
+
+Editing a provider replaces it in place and preserves profile order. New profiles append to the stored list. All rendered provider lists place the default profile first and retain the relative order of other profiles. The model menu marks the selected model with a check icon.

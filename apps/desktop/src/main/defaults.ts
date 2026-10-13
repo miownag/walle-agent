@@ -5,8 +5,11 @@ import type {
   ProviderProfile,
 } from "../shared/contracts";
 
+import { normalizeProviderModels } from "../shared/provider-models";
+
 export const DEFAULT_SETTINGS: AppSettings = {
   version: 1,
+  followUpMode: "queue",
   appearance: {
     theme: "system",
     density: "comfortable",
@@ -113,7 +116,9 @@ function normalizeProviders(value: unknown): ProviderProfile[] {
     if (!isRecord(candidate)) continue;
     const id = stringValue(candidate.id, "").trim();
     const name = stringValue(candidate.name, "").trim();
-    const model = stringValue(candidate.model, "").trim();
+    const models = normalizeProviderModels(candidate.models);
+    const model =
+      stringValue(candidate.model, "").trim() || models[0]?.value || "";
     if (!id || !name || !model || seen.has(id)) continue;
     seen.add(id);
     providers.push({
@@ -125,6 +130,7 @@ function normalizeProviders(value: unknown): ProviderProfile[] {
         "openai",
       ),
       model,
+      ...(models.length ? { models } : {}),
       baseUrl:
         typeof candidate.baseUrl === "string" && candidate.baseUrl.trim()
           ? candidate.baseUrl.trim()
@@ -190,6 +196,11 @@ export function normalizeSettings(value: unknown): AppSettings {
 
   const result: AppSettings = {
     version: 1,
+    followUpMode: enumValue(
+      root.followUpMode,
+      ["queue", "steer"] as const,
+      "queue",
+    ),
     appearance: {
       theme: enumValue(
         appearance.theme,
@@ -254,7 +265,7 @@ export function normalizeSettings(value: unknown): AppSettings {
     permissions: {
       mode: enumValue(
         permissions.mode,
-        ["auto", "ask", "deny-high-risk"] as const,
+        ["auto", "ask", "deny-high-risk", "full-access"] as const,
         DEFAULT_SETTINGS.permissions.mode,
       ),
       approveFileWrites: boolValue(

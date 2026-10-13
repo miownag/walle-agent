@@ -412,6 +412,7 @@ describe("App settings navigation", () => {
       expect(createThread).toHaveBeenCalledWith({
         workspaceRoot: "/repo-b",
         providerProfileId: "provider-b",
+        model: "model-b",
       }),
     );
   });

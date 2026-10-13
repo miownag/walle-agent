@@ -164,6 +164,35 @@ describe("Composer attachments and file mentions", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows model labels and descriptions and selects the actual value within a provider", async () => {
+    const onProviderChange = vi.fn(async () => undefined);
+    renderComposer({
+      onProviderChange,
+      providers: [
+        {
+          ...providers[0],
+          models: [
+            { value: "model-1" },
+            {
+              label: "Friendly model",
+              value: "model-2",
+              description: "Fast coding tasks",
+            },
+          ],
+        },
+      ],
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Select provider and model/ }),
+    );
+    expect(await screen.findByText("Fast coding tasks")).toBeInTheDocument();
+    expect(screen.queryByText("Current")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Selected model")).toBeInTheDocument();
+    expect(screen.getAllByText("model-1").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText("Friendly model"));
+    expect(onProviderChange).toHaveBeenCalledWith("provider-1", "model-2");
+  });
+
   it("shows provider cache data as a share of the latest input", async () => {
     renderComposer({
       maxContextTokens: 256_000,
@@ -448,4 +477,43 @@ describe("Composer attachments and file mentions", () => {
     pasteText(editor, "x");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+});
+
+it("keeps a running composer editable and queues follow-ups by default", async () => {
+  const { props } = renderComposer({ running: true });
+  const editor = screen.getByRole("textbox", { name: "Message Walle" });
+  expect(editor).toHaveAttribute("contenteditable", "true");
+  expect(editor).toHaveAttribute("aria-disabled", "false");
+  pasteText(editor, "Next task");
+  fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+  await waitFor(() =>
+    expect(props.onSend).toHaveBeenCalledWith(
+      "Next task",
+      "Next task",
+      [],
+      [{ type: "text", text: "Next task" }],
+      "queue",
+    ),
+  );
+  expect(screen.getByRole("button", { name: "Stop run" })).toBeEnabled();
+});
+
+it("uses the remembered steering mode while running", async () => {
+  {
+    const { props } = renderComposer({ running: true, followUpMode: "steer" });
+    pasteText(
+      screen.getByRole("textbox", { name: "Message Walle" }),
+      "Change direction",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Steer run" }));
+    await waitFor(() =>
+      expect(props.onSend).toHaveBeenCalledWith(
+        "Change direction",
+        "Change direction",
+        [],
+        [{ type: "text", text: "Change direction" }],
+        "steer",
+      ),
+    );
+  }
 });

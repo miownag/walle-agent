@@ -1,3 +1,4 @@
+import { providerModels } from "@shared/provider-models";
 import {
   useCallback,
   useEffect,
@@ -31,6 +32,7 @@ import type {
   AppSettings,
   BootstrapPayload,
   ContextCommand,
+  FollowUpMode,
   DeepPartial,
   DesktopApi,
   EvolutionProposalSummary,
@@ -132,6 +134,7 @@ export function App() {
   const [threads, setThreads] = useState<ThreadRecord[]>([]);
   const [draft, setDraft] = useState<{
     key: string;
+    model?: string;
     workspaceRoot: string;
     providerProfileId: string;
   } | null>(null);
@@ -329,7 +332,11 @@ export function App() {
         draft.workspaceRoot.split(/[\\/]/).filter(Boolean).at(-1) ??
         draft.workspaceRoot,
       providerProfileId: draft.providerProfileId,
-      model: provider?.model ?? "",
+      model:
+        provider &&
+        providerModels(provider).some((entry) => entry.value === draft.model)
+          ? draft.model!
+          : provider?.model || "",
       pinned: false,
       archived: false,
       unread: false,
@@ -349,7 +356,7 @@ export function App() {
       let workspaceRoot =
         workspaceRootOverride ??
         (!forcePickWorkspace
-          ? draft?.workspaceRoot ?? activeThread?.workspaceRoot
+          ? (draft?.workspaceRoot ?? activeThread?.workspaceRoot)
           : undefined);
       if (!workspaceRoot)
         workspaceRoot = (await api.pickWorkspace()) ?? undefined;
@@ -361,6 +368,7 @@ export function App() {
       setDraft({
         key: `draft:${crypto.randomUUID()}`,
         workspaceRoot,
+        model: workspaceThread?.model || draft?.model || activeThread?.model,
         providerProfileId:
           workspaceThread?.providerProfileId ??
           draft?.providerProfileId ??
@@ -394,6 +402,7 @@ export function App() {
             workspaceRoot,
             providerProfileId:
               existing?.providerProfileId ?? current.providerProfileId,
+            model: existing?.model ?? current.model,
           },
       );
     } catch (cause) {
@@ -411,6 +420,7 @@ export function App() {
         .createThread({
           workspaceRoot: draft.workspaceRoot,
           providerProfileId: draft.providerProfileId || undefined,
+          model: draftThread?.model || undefined,
         })
         .then((thread) => {
           if (!thread) throw new Error("Could not create the thread");
@@ -631,6 +641,7 @@ export function App() {
       pinned?: boolean;
       archived?: boolean;
       providerProfileId?: string;
+      model?: string;
     },
   ) => {
     if (!api) return false;
@@ -677,30 +688,36 @@ export function App() {
     }
   };
 
+  const updatePendingMessage = async (
+    threadId: string,
+    messageId: string,
+    action: "remove" | "steer" | "send",
+  ) => {
+    if (!api) return;
+    await api.updatePendingMessage(threadId, messageId, action);
+    dispatchStream({
+      type: "timeline.loaded",
+      timeline: await api.getTimeline(threadId),
+    });
+  };
+
   const sendPrompt = async (
     threadId: string,
     prompt: string,
     displayPrompt = prompt,
     imageAttachments: SavedImageAttachment[] = [],
     displayParts?: UserMessagePart[],
+    mode?: FollowUpMode,
   ) => {
     if (!api) return;
     const timestamp = new Date().toISOString();
     const pendingRunId = `pending:${crypto.randomUUID()}`;
-    dispatchStream({
-      type: "user.optimistic",
-      threadId,
-      id: `user:${crypto.randomUUID()}`,
-      content: displayPrompt,
-      parts: displayParts,
-      createdAt: timestamp,
-    });
     setThreads((current) =>
       current.map((thread) =>
         thread.id === threadId
           ? {
               ...thread,
-              status: "running",
+              status: mode ? thread.status : "running",
               lastMessage: displayPrompt,
               updatedAt: timestamp,
             }
@@ -708,13 +725,15 @@ export function App() {
       ),
     );
     try {
-      const { runId } = await api.startRun(
+      const { runId, queued, steered } = await api.startRun(
         threadId,
         prompt,
         imageAttachments,
         displayPrompt,
         displayParts,
+        mode,
       );
+      if (queued || steered) return;
       dispatchStream({
         type: "run.ensure",
         threadId,
@@ -723,19 +742,24 @@ export function App() {
       });
     } catch (cause) {
       const message = errorMessage(cause);
-      dispatchStream({
-        type: "run.start-failed",
-        threadId,
-        runId: pendingRunId,
-        message,
-        createdAt: new Date().toISOString(),
-      });
-      setThreads((current) =>
-        current.map((thread) =>
-          thread.id === threadId ? { ...thread, status: "error" } : thread,
-        ),
+      if (!mode) {
+        dispatchStream({
+          type: "run.start-failed",
+          threadId,
+          runId: pendingRunId,
+          message,
+          createdAt: new Date().toISOString(),
+        });
+        setThreads((current) =>
+          current.map((thread) =>
+            thread.id === threadId ? { ...thread, status: "error" } : thread,
+          ),
+        );
+      }
+      toast.error(
+        mode ? "Could not send follow-up" : "Could not start the run",
+        { description: message },
       );
-      toast.error("Could not start the run", { description: message });
       throw cause instanceof Error ? cause : new Error(message);
     }
   };
@@ -1071,6 +1095,10 @@ export function App() {
                       focused
                       split={false}
                       providers={settings.providers}
+                      followUpMode={settings.followUpMode}
+                      onFollowUpModeChange={(followUpMode) =>
+                        patchSettings({ followUpMode })
+                      }
                       permissionMode={settings.permissions.mode}
                       maxContextTokens={settings.maxContextTokens}
                       onFocus={() => undefined}
@@ -1081,10 +1109,10 @@ export function App() {
                           "Context commands are available after the first message.",
                         );
                       }}
-                      onProviderChange={async (providerProfileId) => {
+                      onProviderChange={async (providerProfileId, model) => {
                         setDraft(
                           (current) =>
-                            current && { ...current, providerProfileId },
+                            current && { ...current, providerProfileId, model },
                         );
                       }}
                       onPermissionModeChange={(mode) =>
@@ -1117,6 +1145,10 @@ export function App() {
                         focused
                         split={false}
                         providers={settings.providers}
+                        followUpMode={settings.followUpMode}
+                        onFollowUpModeChange={(followUpMode) =>
+                          patchSettings({ followUpMode })
+                        }
                         permissionMode={settings.permissions.mode}
                         maxContextTokens={settings.maxContextTokens}
                         onPermissionModeChange={(mode) =>
@@ -1128,6 +1160,7 @@ export function App() {
                           displayPrompt,
                           imageAttachments,
                           displayParts,
+                          mode,
                         ) =>
                           sendPrompt(
                             paneThreads[0].id,
@@ -1135,6 +1168,7 @@ export function App() {
                             displayPrompt,
                             imageAttachments,
                             displayParts,
+                            mode,
                           )
                         }
                         onSlashCommand={(command) =>
@@ -1142,10 +1176,18 @@ export function App() {
                         }
                         onSearchWorkspaceFiles={api.searchWorkspaceFiles}
                         onSaveImageAttachments={api.saveImageAttachments}
+                        onPendingMessageAction={(messageId, action) =>
+                          updatePendingMessage(
+                            paneThreads[0].id,
+                            messageId,
+                            action,
+                          )
+                        }
                         onStop={() => stopRun(paneThreads[0].id)}
-                        onProviderChange={async (providerProfileId) => {
+                        onProviderChange={async (providerProfileId, model) => {
                           await updateThread(paneThreads[0].id, {
                             providerProfileId,
+                            model,
                           });
                         }}
                         onDisclosureChange={(runId, disclosure) =>
@@ -1166,6 +1208,10 @@ export function App() {
                             focused={focusedPane === 0}
                             split
                             providers={settings.providers}
+                            followUpMode={settings.followUpMode}
+                            onFollowUpModeChange={(followUpMode) =>
+                              patchSettings({ followUpMode })
+                            }
                             permissionMode={settings.permissions.mode}
                             maxContextTokens={settings.maxContextTokens}
                             onPermissionModeChange={(mode) =>
@@ -1185,6 +1231,7 @@ export function App() {
                               displayPrompt,
                               imageAttachments,
                               displayParts,
+                              mode,
                             ) =>
                               sendPrompt(
                                 paneThreads[0].id,
@@ -1192,6 +1239,7 @@ export function App() {
                                 displayPrompt,
                                 imageAttachments,
                                 displayParts,
+                                mode,
                               )
                             }
                             onSlashCommand={(command) =>
@@ -1199,10 +1247,21 @@ export function App() {
                             }
                             onSearchWorkspaceFiles={api.searchWorkspaceFiles}
                             onSaveImageAttachments={api.saveImageAttachments}
+                            onPendingMessageAction={(messageId, action) =>
+                              updatePendingMessage(
+                                paneThreads[0].id,
+                                messageId,
+                                action,
+                              )
+                            }
                             onStop={() => stopRun(paneThreads[0].id)}
-                            onProviderChange={async (providerProfileId) => {
+                            onProviderChange={async (
+                              providerProfileId,
+                              model,
+                            ) => {
                               await updateThread(paneThreads[0].id, {
                                 providerProfileId,
+                                model,
                               });
                             }}
                             onDisclosureChange={(runId, disclosure) =>
@@ -1224,6 +1283,10 @@ export function App() {
                             focused={focusedPane === 1}
                             split
                             providers={settings.providers}
+                            followUpMode={settings.followUpMode}
+                            onFollowUpModeChange={(followUpMode) =>
+                              patchSettings({ followUpMode })
+                            }
                             permissionMode={settings.permissions.mode}
                             maxContextTokens={settings.maxContextTokens}
                             onPermissionModeChange={(mode) =>
@@ -1243,6 +1306,7 @@ export function App() {
                               displayPrompt,
                               imageAttachments,
                               displayParts,
+                              mode,
                             ) =>
                               sendPrompt(
                                 paneThreads[1].id,
@@ -1250,6 +1314,7 @@ export function App() {
                                 displayPrompt,
                                 imageAttachments,
                                 displayParts,
+                                mode,
                               )
                             }
                             onSlashCommand={(command) =>
@@ -1257,10 +1322,21 @@ export function App() {
                             }
                             onSearchWorkspaceFiles={api.searchWorkspaceFiles}
                             onSaveImageAttachments={api.saveImageAttachments}
+                            onPendingMessageAction={(messageId, action) =>
+                              updatePendingMessage(
+                                paneThreads[1].id,
+                                messageId,
+                                action,
+                              )
+                            }
                             onStop={() => stopRun(paneThreads[1].id)}
-                            onProviderChange={async (providerProfileId) => {
+                            onProviderChange={async (
+                              providerProfileId,
+                              model,
+                            ) => {
                               await updateThread(paneThreads[1].id, {
                                 providerProfileId,
+                                model,
                               });
                             }}
                             onDisclosureChange={(runId, disclosure) =>

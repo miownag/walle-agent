@@ -22,6 +22,47 @@ describe("DesktopStore", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it("persists per-thread model selection and preserves it when the provider default changes", async () => {
+    const store = new DesktopStore(directory);
+    await store.init();
+    const profile = {
+      id: "multi",
+      name: "Gateway",
+      kind: "anthropic" as const,
+      model: "first",
+      models: [
+        { value: "first" },
+        { label: "Second", value: "second", description: "Fast" },
+      ],
+      hasApiKey: true,
+      isDefault: true,
+    };
+    await store.updateSettings({ providers: [profile] });
+    const first = await store.createThread({
+      workspaceRoot: directory,
+      model: "second",
+    });
+    const other = await store.createThread({ workspaceRoot: directory });
+    expect(first.model).toBe("second");
+    expect(other.model).toBe("first");
+    await store.updateThread(first.id, { model: "first" });
+    await store.updateSettings({
+      providers: [{ ...profile, model: "second" }],
+    });
+    expect(store.getThread(first.id)?.model).toBe("first");
+    await expect(
+      store.updateThread(first.id, {
+        model: "missing",
+        title: "Must not persist",
+      }),
+    ).rejects.toThrow(/Unknown model/);
+    expect(store.getThread(first.id)?.title).toBe(first.title);
+    const restored = new DesktopStore(directory);
+    await restored.init();
+    expect(restored.getThread(first.id)?.model).toBe("first");
+    expect(restored.getSettings().providers[0].models?.[0].label).toBe("first");
+  });
+
   it("creates defaults and atomically round-trips threads and timelines", async () => {
     const store = new DesktopStore(directory);
     await store.init();

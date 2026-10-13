@@ -74,7 +74,7 @@ Composer 支持粘贴或选择 PNG/JPEG/WebP/GIF（最多 4 张、单张 5 MiB�
 
 在光标所在 token 输入 `@` 会触发 workspace 文件搜索。Main 从 thread id 解析 workspace，限制遍历深度、entries、时间和结果数，跳过 symlink、`.git`、`node_modules`、`.walle` 与生成目录。Renderer 必须用 request sequence 丢弃过期结果，并支持方向键、Enter、Escape、鼠标和 listbox a11y。选择结果会成为 Tiptap 的 inline atom 文件块，不能被当作普通字符拆开编辑；发送后的 user bubble 继续按持久化的有序 `text/file` parts 展示同类文件块，而不是裸 token。Timeline 不保存 Tiptap HTML/JSON，也不信任 renderer 传来的绝对路径；main 在发送时重新通过 workspace boundary 解析每个相对路径，再把 canonical path 编入模型 prompt。旧 timeline 没有 parts 时仍按纯文本回退。
 
-Sidebar 搜索框以品牌行下方的浮层出现，不参与 flex 高度，因此不会把导航和 workspace 列表整体向下推。左下 Settings 始终是中性动作入口，不展示当前页选中态，只在 hover 时提高背景对比度。
+Sidebar 搜索框打开时在 Walle 品牌行内替换品牌内容，保留右侧关闭按钮；品牌行高度固定，不覆盖或推动导航与 workspace 列表。关闭或按 Escape 后清空筛选并恢复品牌。左下 Settings 始终是中性动作入口，不展示当前页选中态，只在 hover 时提高背景对比度。
 
 Terminal 使用 renderer 内的 xterm.js 画布和 main 内的 `node-pty`，交互方式与 VS Code 集成终端一致：光标处直接输入，支持持续 cwd/history、Ctrl+C、IME、ANSI/TUI 与尺寸同步，不另设底部 command input。Renderer 创建终端时只提交 thread id 和字符尺寸；main 从 DesktopStore 解析 canonical workspace root，并按当前 Sandbox 设置启动 Local host shell 或带已配置 image/resource/network/workspace mount 的 Docker shell，Docker 启动失败不得静默回退到 host。直接由用户输入的交互式终端不经过 Agent tool approval 或 executable allowlist，UI 必须清晰披露该边界；Provider fallback credentials 不得继承给 PTY。PTY output 跨 IPC 前要合批并限制 pending 大小；每个 session 同时只能有一个带 sequence 的 batch in-flight，main 发出 batch 前暂停 PTY，renderer 必须等 xterm `write` callback 确认解析完成后 ACK，main 再发送 pending batch 或恢复 PTY。session 必须按 renderer owner/thread 校验，并在 dock/thread/window/reload/crash/quit 时清理，Docker container 还要显式兜底删除。
 
@@ -94,3 +94,29 @@ Terminal 使用 renderer 内的 xterm.js 画布和 main 内的 `node-pty`，交�
 | Permission approvals        | `@walle-agent/core` PermissionPolicy            |
 
 完整产品要求、设计、任务与验证记录见 `plans/desktop-app/`。
+
+## Provider 多模型配置
+
+- 一个 Provider 共用类型、Base URL 和安全存储中的 API key，可配置多个 `models` 项：`{ label?: string, value: string, description?: string }`。
+- `value` 必填，同一 Provider 内唯一；`label` 可选，留空展示 `value`；`description` 可选，在聊天模型菜单中以灰色小字展示。
+- `model` 保存 Provider 的默认 Model ID，必须属于模型列表。旧的单模型配置继续有效，编辑时作为一个模型项显示。
+- Provider 表单支持添加、删除模型和选择默认模型；没有有效模型 value 时禁用 Default model，填写有效 value 后启用。Base URL 的 `optional` 与标题同一行，位于右侧。
+- 聊天工具栏可选择同一 Provider 下的不同模型。实际 `value` 保存在对应 thread 的 `model` 中；新任务、流式请求与标题生成均使用该值，切换后重建该 thread 的 runtime。
+- 编辑 Provider 的默认模型或模型列表不重写已有 thread 的 Model ID。已有 thread 使用的模型从列表移除后仍保留其 ID，直到用户主动切换。
+- Anthropic Provider 的 Base URL 传入 SDK。自定义端点不自动继承厂商通用 API key；远程 URL 必须使用 HTTPS，本机回环允许 HTTP。
+
+Provider 表单的 API key 输入框默认隐藏，右侧眼睛按钮可切换当前输入的明文显示。新建或重新编辑 Provider 时恢复隐藏；已保存的 key 仍仅返回 masked 状态，不回填明文。
+
+表单选择器的选项与选中态统一显示 label，绑定和保存 value；模型未填写 label 时显示 value。
+
+`pnpm desktop:dev` 启用 Electron main/preload 代码变更监听，变更后重建并重启主进程；renderer 继续使用 Vite 热更新，Provider 配置由同版本的 main 持久化。
+
+聊天模型菜单只展示模型名称、可选描述和当前选择，不展示 Provider 名称、标题或设置提示。悬停模型时显示 Provider 名称、类型、实际 Model ID 和描述。权限菜单不显示标题。
+
+Full access 为独立权限模式：跳过工具审批和工具 deny 列表，按 core auto 模式执行；保留已配置的 deny 列表以供切回其他模式，工作区校验与 Sandbox 限制继续执行。设置页与聊天菜单共用该模式，不改变用户当前权限选择。
+
+### Running follow-ups
+
+Full Access uses pale red text and a light red selected background. The composer stays editable while running, including file references and image attachments. Stop remains available beside Send. Queue is the default follow-up behavior; the Queue / Steer menu and Appearance settings share the persisted default. Queue starts each follow-up in order after successful completion. Cancellation or failure pauses the queue. Pending messages persist across restarts and support explicit sending, removal, or promotion to Steer while running. Steer adds guidance to the current run at the next model boundary, preserving pending tool-call/result pairing and session history.
+
+Sidebar workspace order is saved locally and stays fixed across conversation updates, filtering, archival, and restarts. New folders append. Within each workspace and the pinned section, threads sort by createdAt descending with a stable ID tie-breaker; updatedAt only affects displayed activity time.

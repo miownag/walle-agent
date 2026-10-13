@@ -56,6 +56,7 @@ import type { TokenUsage } from "./types.js";
 interface ActiveRun {
   id: string;
   controller: AbortController;
+  steering: AgentInput[];
 }
 
 function classifyResolvedToolOutput(
@@ -613,6 +614,21 @@ export class AgentRuntime {
     this.activeRun?.controller.abort(reason ?? "user-interrupt");
   }
 
+  steer(input: AgentInput): boolean {
+    if (!this.activeRun || this.activeRun.controller.signal.aborted)
+      return false;
+    this.activeRun.steering.push({
+      ...structuredClone(input),
+      attachments: input.attachments?.map((attachment) => ({
+        ...attachment,
+        data: Buffer.isBuffer(attachment.data)
+          ? Buffer.from(attachment.data)
+          : attachment.data,
+      })),
+    });
+    return true;
+  }
+
   /** Whether a run is currently in flight. */
   isRunning(): boolean {
     return this.activeRun !== null;
@@ -639,7 +655,11 @@ export class AgentRuntime {
     const sessionId = input.sessionId;
 
     const internalController = new AbortController();
-    this.activeRun = { id: runId, controller: internalController };
+    this.activeRun = {
+      id: runId,
+      controller: internalController,
+      steering: [],
+    };
     const signal = mergeAbortSignals(
       options?.signal,
       internalController.signal,
@@ -698,6 +718,28 @@ export class AgentRuntime {
           conversationHistory: history,
         });
 
+        const consumeSteering = async function* (runtime: AgentRuntime) {
+          while (runtime.activeRun?.steering.length) {
+            const input = runtime.activeRun.steering[0];
+            const processed =
+              await runtime.middlewarePipeline.beforeInput(input);
+            const message = runtime.promptBuilder.build({
+              input: processed,
+              context: [],
+              tools: [],
+            })[0];
+            messages.push(message);
+            runtime.activeRun.steering.shift();
+            await runtime.eventBus.emit("input_steered", {
+              input: processed,
+              message,
+              runId,
+              sessionId,
+            });
+            yield { type: "input_steered" as const, input: processed };
+          }
+        };
+
         // 7. Execution loop
         const maxTurns = options?.maxTurns ?? this.config.maxTurns;
 
@@ -706,6 +748,8 @@ export class AgentRuntime {
             status = "user-cancelled";
             return;
           }
+
+          yield* consumeSteering(this);
 
           // Micro compression: emit so plugins (e.g. MemoryPlugin) can rewrite
           // older tool messages into placeholders.
@@ -819,6 +863,7 @@ export class AgentRuntime {
 
           // No tool calls — end loop
           if (!toolCalls.length) {
+            if (this.activeRun?.steering.length) continue;
             break;
           }
 
